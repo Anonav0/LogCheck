@@ -11,4 +11,3 @@ class LogParsingError(LogLensError):
 
 class InvalidLineReferenceError(LogLensError):
     """Raised when a line number or reference range is invalid or out of bounds."""
-

@@ -114,4 +114,3 @@ class TestEventReferenceIntegrity:
         for event in result.failure_events:
             assert all(ln >= 1 for ln in event.line_numbers)
             assert event.line_numbers == sorted(event.line_numbers)
-

@@ -7,8 +7,8 @@
 **LogLens AI** is an intelligent log analysis engine designed to help software engineers rapidly inspect application and test logs, isolate errors and exceptions, extract multiline stack traces, group recurring failures via deterministic fingerprinting, and generate actionable, evidence-backed debugging summaries using LLMs.
 
 > [!NOTE]
-> **Development Status: Phase 2 Completed (Log Parsing & Stack Trace Extraction)**
-> Deterministic line-by-line parsing, level normalization, Python/Java traceback extraction, assertion failure identification, and 1-based source line mapping are fully implemented. Failure fingerprinting, recurring-failure grouping, LLM integration, REST API, and Streamlit dashboard will be implemented in subsequent phases.
+> **Development Status: Phase 3 Completed (Failure Fingerprinting & Grouping)**
+> Deterministic failure fingerprinting (SHA-256), conservative variable normalization (UUIDs, request IDs, memory addresses), recurring failure aggregation, and aggregate failure metrics are fully implemented and verified. LLM integration, REST API, and Streamlit dashboard will be implemented in subsequent phases.
 
 ---
 
@@ -16,7 +16,7 @@
 
 Modern software applications and automated test suites generate verbose, noisy logs. When incidents or test suite failures occur:
 - Developers must manually sift through thousands of lines to spot relevant errors.
-- The same underlying root cause often appears dozens or hundreds of times with slight parameter variations, cluttering investigation.
+- The same underlying root cause often appears dozens or hundreds of times with slight parameter variations (such as changing request IDs, UUIDs, or timestamps), cluttering investigation.
 - Multiline exception stack traces are difficult to parse deterministically without losing context or absorbing subsequent valid logs.
 - While LLMs can provide insightful triage summaries, raw logs are often too large to send directly, and LLM responses risk "hallucinating" line references or root causes if not bound to verifiable evidence.
 
@@ -27,186 +27,130 @@ Modern software applications and automated test suites generate verbose, noisy l
 
 ---
 
-## 2. Phase 2 Capabilities & Parser Architecture
+## 2. Phase 3 Capabilities & Pipeline Architecture
 
-Phase 2 introduces a completely offline, deterministic log parsing engine (`app/services/log_parser.py`):
+Phase 3 introduces a completely offline, deterministic failure fingerprinting and grouping engine:
 
 ```
-Raw Multiline Log Text
-         │
-         ▼
-[ Step 1: Line Ingestion & Indexing ] ──> Preserves exact 1-based line numbers & raw content
-         │
-         ▼
-[ Step 2: Metadata & Level Parsing ] ──> Timestamp, logger, level extraction (bracket, spaced, JSON)
-         │
-         ▼
-[ Step 3: Exception & Trace Extraction ]
-   ├── Python Tracebacks: Headers, frames, code context, chaining markers, terminal exceptions
-   ├── Java Stack Traces: Exception declarations, `at` frames, `Caused by:`, suppressed exceptions
-   └── Test Runner Output: Pytest & Unittest failure sections, assertion messages
-         │
-         ▼
-[ Step 4: Event Assembly & Line Linking ] ──> Groups lines into logical `FailureEvent`s; links `ParsedLogEntry`
-         │
-         ▼
-[ Step 5: Summary Metrics Calculation ] ──> total_lines, error_count, failure_event_count, etc.
+Parsed FailureEvents (from Phase 2)
+              │
+              ▼
+[ Step 1: Signature Extraction ] ──────────> Extract (failure_type, exception_type, message, component)
+              │
+              ▼
+[ Step 2: Conservative Normalization ] ────> Volatile variables replaced (<UUID>, <MEMORY_ADDRESS>, <REQUEST_ID>)
+              │                              Semantic data preserved (timeouts, status codes, error codes)
+              ▼
+[ Step 3: Canonical Serialization ] ───────> Deterministic string: category=...|component=...|exception=...|message=...
+              │
+              ▼
+[ Step 4: SHA-256 Fingerprint ] ───────────> 64-character hex hash (independent of Python hash seed)
+              │
+              ▼
+[ Step 5: Failure Grouping & Aggregation ] > Aggregate occurrences, union line numbers, first/last seen
+              │
+              ▼
+[ Step 6: Deterministic Ordering ] ────────> 1. occurrence_count DESC, 2. first_seen_line ASC, 3. fingerprint ASC
+              │
+              ▼
+[ Step 7: Analysis Metrics Calculation ] ──> unique_groups, repeated_groups, repeated_events, max_count
 ```
 
-### Supported Log Formats
-- **Standard Bracketed Logs:** `2026-10-14 08:30:01,102 [INFO] app.server: Starting worker`
-- **Spaced Logger Format:** `2026-10-14 10:15:30 INFO application.worker - Job started`
-- **Bracket-Prefixed Severity:** `[ERROR] PaymentService - Transaction failed`
-- **Colon-Prefixed Severity:** `ERROR: Unable to connect to host`
-- **JSON Structured Lines:** `{"timestamp": "...", "level": "ERROR", "logger": "...", "message": "..."}`
-- **Corrupted / Custom Streams:** `[2026/10/14-09:40:00] !!! UNUSUAL_ALERT !!! ...`
-- **Unstructured / Malformed Lines:** Emitted by subshells or plain text; preserved without crashing.
+### Normalization Rules
 
-### Key Distinctions
-- **Log Entry vs. Failure Event:** A log entry (`ParsedLogEntry`) represents a single physical line of text with its line number and parsed metadata. A failure event (`FailureEvent`) represents a logical failure or exception that may span multiple lines (an explicit error line, traceback header, 10 stack frames, code context lines, and terminal exception declaration).
-- **False-Positive Resistance:** Ordinary informational messages containing the word "error" or "warning" (e.g. `INFO app - The previous error has been resolved`) retain their `INFO` severity and never generate false failure events.
-- **Traceback Boundaries:** Parsers strictly terminate traceback consumption when a subsequent structured log entry or unindented text is encountered. Subsequent log lines are never absorbed into preceding tracebacks.
+Volatile parameters that vary across identical failure causes are normalized safely:
+- **UUIDs:** `550e8400-e29b-41d4-a716-446655440000` $\rightarrow$ `<UUID>`
+- **Memory Addresses:** `0x7f12ab34` $\rightarrow$ `<MEMORY_ADDRESS>`
+- **Request Identifiers:** `req-a1b2c3d4` or `request 12345` $\rightarrow$ `<REQUEST_ID>`
+- **Entity Tokens:** `tx-99128` $\rightarrow$ `<TX_ID>`, `job-981` $\rightarrow$ `<JOB_ID>`, `order_id=ord_123` $\rightarrow$ `order_id=<ORDER_ID>`
+- **Entity Phrases:** `Payment 10234` $\rightarrow$ `Payment <ENTITY_ID>`, `users/42` $\rightarrow$ `users/<ENTITY_ID>`
+
+**What is Intentionally Preserved:**
+- Timeouts and durations (`after 5.0s` vs `after 60.0s` remain distinct).
+- HTTP status codes (`503 Service Unavailable` vs `404 Not Found` remain distinct).
+- Database error codes (`ORA-00001`, `SQLSTATE 23505`).
+- Port numbers, version strings, and assertion expressions.
+
+### Failure Event vs. Failure Group
+
+- **Failure Event (`FailureEvent`):** Represents an individual occurrence of a failure within the log stream (with its own event ID, primary line number, stack trace, and timestamp).
+- **Failure Group (`FailureGroup`):** Represents a logical collection of recurring failure events sharing the same deterministic SHA-256 fingerprint.
+
+### Analysis Metrics Definitions
+
+- `total_log_lines`: Total physical lines in the log.
+- `total_error_entries`: Entries classified explicitly as ERROR or CRITICAL.
+- `total_warning_entries`: Entries classified explicitly as WARNING.
+- `total_failure_events`: Total individual failure events identified.
+- `unique_failure_groups`: Number of distinct fingerprints.
+- `repeated_failure_groups`: Groups with `occurrence_count > 1`.
+- `repeated_failure_events`: Occurrences belonging to repeated groups (`sum(count for g in groups if count > 1)`).
+- `most_frequent_failure_count`: Largest single group occurrence count.
 
 ---
 
-## 3. Real Parser Output Example
+## 3. Real Example of End-to-End Analysis
 
-Given the raw log snippet:
+Processing `tests/fixtures/recurring_failures.log` through `analyze_failures()`:
 
-```log
-2026-10-14 08:30:05,432 [ERROR] app.database: Failed to acquire connection
-Traceback (most recent call last):
-  File "/srv/app/services/payment.py", line 142, in process_transaction
-    async with db.transaction() as conn:
-app.database.exceptions.ConnectionTimeoutError: Timed out waiting for connection
-2026-10-14 08:30:06,001 [INFO] app.server: Health check passed
+```python
+from pathlib import Path
+from app.services.log_parser import parse_log_text
+from app.services.grouping import analyze_failures
+
+log_text = Path("tests/fixtures/recurring_failures.log").read_text()
+parsing_result = parse_log_text(log_text)
+analysis = analyze_failures(parsing_result)
 ```
 
-Executing `parse_log_text(log)` produces:
-
+### Metrics Output:
 ```json
 {
-  "total_lines": 6,
-  "entries": [
-    {
-      "line_number": 1,
-      "raw_line": "2026-10-14 08:30:05,432 [ERROR] app.database: Failed to acquire connection",
-      "timestamp": "2026-10-14 08:30:05,432",
-      "level": "ERROR",
-      "logger_name": "app.database",
-      "message": "Failed to acquire connection",
-      "category": "error",
-      "failure_event_id": "event-1"
-    },
-    {
-      "line_number": 2,
-      "raw_line": "Traceback (most recent call last):",
-      "timestamp": null,
-      "level": null,
-      "logger_name": null,
-      "message": "Traceback (most recent call last):",
-      "category": "traceback_header",
-      "failure_event_id": "event-1"
-    },
-    {
-      "line_number": 3,
-      "raw_line": "  File \"/srv/app/services/payment.py\", line 142, in process_transaction",
-      "timestamp": null,
-      "level": null,
-      "logger_name": null,
-      "message": "File \"/srv/app/services/payment.py\", line 142, in process_transaction",
-      "category": "stack_frame",
-      "failure_event_id": "event-1"
-    },
-    {
-      "line_number": 4,
-      "raw_line": "    async with db.transaction() as conn:",
-      "timestamp": null,
-      "level": null,
-      "logger_name": null,
-      "message": "    async with db.transaction() as conn:",
-      "category": "stack_frame",
-      "failure_event_id": "event-1"
-    },
-    {
-      "line_number": 5,
-      "raw_line": "app.database.exceptions.ConnectionTimeoutError: Timed out waiting for connection",
-      "timestamp": null,
-      "level": null,
-      "logger_name": null,
-      "message": "app.database.exceptions.ConnectionTimeoutError: Timed out waiting for connection",
-      "category": "exception",
-      "failure_event_id": "event-1"
-    },
-    {
-      "line_number": 6,
-      "raw_line": "2026-10-14 08:30:06,001 [INFO] app.server: Health check passed",
-      "timestamp": "2026-10-14 08:30:06,001",
-      "level": "INFO",
-      "logger_name": "app.server",
-      "message": "Health check passed",
-      "category": "normal",
-      "failure_event_id": null
-    }
-  ],
-  "failure_events": [
-    {
-      "event_id": "event-1",
-      "event_type": "exception",
-      "exception_type": "ConnectionTimeoutError",
-      "message": "Timed out waiting for connection",
-      "primary_line_number": 5,
-      "start_line_number": 1,
-      "end_line_number": 5,
-      "line_numbers": [1, 2, 3, 4, 5],
-      "stack_trace": [
-        "Traceback (most recent call last):",
-        "  File \"/srv/app/services/payment.py\", line 142, in process_transaction",
-        "    async with db.transaction() as conn:",
-        "app.database.exceptions.ConnectionTimeoutError: Timed out waiting for connection"
-      ],
-      "timestamp": "2026-10-14 08:30:05,432",
-      "level": "ERROR",
-      "logger_name": "app.database"
-    }
-  ],
-  "error_count": 1,
-  "warning_count": 0,
-  "failure_event_count": 1,
-  "stack_trace_line_count": 4,
-  "parser_warnings": []
+  "total_log_lines": 34,
+  "total_error_entries": 4,
+  "total_warning_entries": 0,
+  "total_failure_events": 4,
+  "unique_failure_groups": 2,
+  "repeated_failure_groups": 1,
+  "repeated_failure_events": 3,
+  "most_frequent_failure_count": 3
 }
 ```
 
+### Grouped Failures:
+1. **Group 1 (Repeated Failure):**
+   - **Title:** `DatabaseConnectionError: Connection lost to database cluster primary`
+   - **Fingerprint:** `72907e419faff67e93066426a148dc4cfb8dd9cea92d3338c33f06c83b2ef1a8`
+   - **Occurrence Count:** `3`
+   - **Source Lines:** `[2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 26, 27, 28, 29, 30, 31, 32]`
+   - **First Seen:** Line 8, **Last Seen:** Line 32
+2. **Group 2 (Isolated Failure):**
+   - **Title:** `ValidationError: Missing required field 'shipping_address'`
+   - **Fingerprint:** `b9e399ea2dcb785f473b21b4f240d63682b74c098fbaa13693f22e2985faaa4d`
+   - **Occurrence Count:** `1`
+   - **Source Lines:** `[18, 19, 20, 21, 22, 23, 24]`
+   - **First Seen:** Line 24, **Last Seen:** Line 24
+
 ---
 
-## 4. Current Limitations
-
-- **Binary Logs:** Only plain-text and UTF-8 encoded log files are currently supported.
-- **Java Source Lookup:** Java exception stack traces extract class names, method names, and file numbers, but do not perform classpath or source-code decompilation.
-- **Fingerprinting & Recurrence Counts:** Not yet implemented; planned for Phase 3.
-- **LLM Summaries & REST API:** Not yet implemented; planned for Phase 4.
-
----
-
-## 5. Technology Stack
+## 4. Technology Stack
 
 ### Backend & Core
 - **Language:** Python 3.11+ (Tested on Python 3.12)
 - **Data Validation:** Pydantic v2 & Pydantic-Settings
 - **Environment Management:** python-dotenv
 
-### Log Processing (Phase 2)
-- Python Standard Library (`re`, `json`, `enum`)
-- Deterministic regex tokenization and traceback extraction
+### Algorithms & Services (Phase 2 & Phase 3)
+- Python Standard Library (`re`, `hashlib`, `json`, `enum`, `collections`)
+- Deterministic SHA-256 fingerprinting and occurrence aggregation
 
 ### Quality & Testing
-- **Test Framework:** pytest & pytest-cov (86 passing tests, 89% coverage)
+- **Test Framework:** pytest & pytest-cov (119 passing tests, 91% coverage)
 - **Linter & Formatter:** Ruff
 
 ---
 
-## 6. Installation & Quickstart
+## 5. Installation & Quickstart
 
 ```bash
 # Clone repository and enter directory
@@ -233,25 +177,21 @@ ruff format --check .
 
 ---
 
-## 7. Implementation Roadmap
+## 6. Implementation Roadmap
 
 - [x] **Phase 1: Project Setup & Sample Logs**
-  - Initial repository layout, dependencies, and virtual environment.
-  - Typed configuration management using Pydantic Settings.
-  - Realistic test log fixtures and initial verification test suite.
+  - Scaffolding, configuration management, and initial test suite.
 - [x] **Phase 2: Core Log Parsing & Failure Detection**
-  - Line-by-line parsing with 1-based source line mapping.
-  - Normalization of log severity levels (WARN->WARNING, FATAL->CRITICAL).
-  - Multi-line Python traceback parsing and exception-chaining preservation.
-  - Java stack trace and `Caused by:` chain extraction.
-  - Pytest assertion failures and test failure section extraction.
-  - Distinct separation of log entries vs logical failure events.
-- [ ] **Phase 3: Failure Fingerprinting & Grouping**
+  - Line-by-line parsing, level normalization, Python/Java tracebacks.
+  - 1-based source line mapping.
+- [x] **Phase 3: Failure Fingerprinting & Grouping**
   - Variable normalization (UUIDs, request IDs, hex addresses).
-  - Deterministic SHA-256 fingerprinting and occurrence grouping.
-- [ ] **Phase 4: LLM Service & REST API**
+  - Deterministic SHA-256 fingerprinting.
+  - Multi-occurrence failure grouping and recurrence metrics.
+- [ ] **Phase 4: Input Validation & Evidence Integrity**
+  - Request validation limits (size, lines) and bounded evidence extraction.
+  - REST API (`/health`, `/api/v1/analyze`).
+- [ ] **Phase 5: LLM Service & Report Generation**
   - Provider-agnostic LLM interface with strict evidence validation.
-  - FastAPI endpoints (`/health`, `/api/v1/analyze`).
-- [ ] **Phase 5: Streamlit Dashboard & Documentation**
+- [ ] **Phase 6: Streamlit Dashboard & Documentation**
   - Interactive web UI with side-by-side evidence inspection.
-  - End-to-end user guide and portfolio documentation.

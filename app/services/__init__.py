@@ -6,6 +6,18 @@ from app.services.exception_detector import (
     detect_python_exception,
     detect_test_failure_indicator,
 )
+from app.services.fingerprinting import (
+    FailureSignature,
+    extract_failure_signature,
+    generate_fingerprint,
+    normalize_failure_message,
+    serialize_signature,
+)
+from app.services.grouping import (
+    analyze_failures,
+    compute_analysis_metrics,
+    group_failures,
+)
 from app.services.log_parser import LogParser, parse_log_text
 from app.services.stack_trace_parser import (
     is_java_caused_by,
@@ -17,16 +29,24 @@ from app.services.stack_trace_parser import (
 )
 
 __all__ = [
+    "FailureSignature",
     "LogParser",
+    "analyze_failures",
+    "compute_analysis_metrics",
     "detect_assertion_failure",
     "detect_java_exception",
     "detect_python_exception",
     "detect_test_failure_indicator",
+    "extract_failure_signature",
+    "generate_fingerprint",
+    "group_failures",
     "is_java_caused_by",
     "is_java_stack_frame",
     "is_python_chaining_marker",
     "is_python_stack_frame",
     "is_python_traceback_header",
     "is_stack_frame_line",
+    "normalize_failure_message",
     "parse_log_text",
+    "serialize_signature",
 ]

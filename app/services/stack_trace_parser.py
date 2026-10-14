@@ -59,4 +59,3 @@ def is_stack_frame_line(line: str) -> bool:
         or is_java_stack_frame(line)
         or is_java_truncated_frame(line)
     )
-

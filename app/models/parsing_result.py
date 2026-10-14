@@ -46,4 +46,3 @@ class ParsingResult(BaseModel):
         default_factory=list,
         description="Nonfatal parsing notices or limitations encountered during parsing.",
     )
-

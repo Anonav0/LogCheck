@@ -114,4 +114,3 @@ def detect_test_failure_indicator(line: str) -> tuple[str, str] | None:
         return test_id, f"Test failed: {test_id}"
 
     return None
-

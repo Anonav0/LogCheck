@@ -138,4 +138,3 @@ def validate_log_file_bytes(
         ) from exc
 
     return validate_log_input(decoded_text, settings=settings)
-

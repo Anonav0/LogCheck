@@ -7,8 +7,8 @@
 **LogLens AI** is an intelligent log analysis engine designed to help software engineers rapidly inspect application and test logs, isolate errors and exceptions, extract multiline stack traces, group recurring failures via deterministic fingerprinting, and generate actionable, evidence-backed debugging summaries using LLMs.
 
 > [!NOTE]
-> **Development Status: Phase 4 Completed (Input Validation & Evidence Integrity)**
-> Strict pre-parse input limits (byte size, line count, line length), UTF-8 verification, canonical line-splitting semantics, post-analysis evidence integrity validation, and failure group/metric verification are fully implemented and verified. LLM integration, REST API endpoints, and Streamlit dashboard will be implemented in subsequent phases.
+> **Development Status: Phase 5 Completed (LLM Integration & AI Triage Layer)**
+> A provider-independent LLM service with strict Pydantic response validation, bounded prompt construction, conservative secret redaction, post-generation source-evidence verification, and deterministic offline fallback is fully implemented and tested. FastAPI REST endpoints and Streamlit dashboard will be built in Phase 6.
 
 ---
 
@@ -18,192 +18,200 @@ Modern software applications and automated test suites generate verbose, noisy l
 - Developers must manually sift through thousands of lines to spot relevant errors.
 - Raw log inputs can be corrupted, oversized, or contain malicious line lengths designed to cause denial of service.
 - Discrepancies between log splitters and parsers cause "off-by-one" line numbering errors.
-- Automated triage tools or LLM summarizers risk hallucinating nonexistent line numbers, mutating source lines, or reporting fabricated metrics if not verified against the original input.
+- Generic LLM summaries often hallucinate nonexistent line numbers, invent ungrounded root causes, or expose credentials sent in raw prompts.
 
-**LogLens AI** addresses these challenges through a strict 3-tier safety architecture:
-1. **Pre-Parse Input Validation:** Rejects empty, invalidly encoded, or oversized payloads before parsing begins, protecting computational resources.
+**LogLens AI** addresses these challenges through a strict 4-tier safety architecture:
+1. **Pre-Parse Input Validation:** Rejects empty, invalidly encoded, or oversized payloads before parsing begins.
 2. **Deterministic Processing Pipeline:** Parses lines, preserves exact 1-based source line numbers, extracts complete stack traces, and fingerprints failures deterministically into recurring failure groups.
-3. **Evidence Integrity Verification:** Verifies every line reference, raw line text, group occurrence mapping, and aggregate metric against the original source log before any result is trusted or returned.
+3. **Evidence Integrity Verification:** Verifies every line reference, raw line text, group occurrence mapping, and aggregate metric against the original source log.
+4. **Evidence-Anchored AI Triage:** Sends bounded, structured summaries to an LLM to generate root-cause hypotheses and investigation steps, strictly validating every returned line reference against original source logs with instant deterministic fallback upon any provider failure.
 
 ---
 
-## 2. Input Validation Architecture (Phase 4)
+## 2. LLM Integration Architecture (Phase 5)
 
-### Configurable Limits and Units
-
-All input boundaries are enforced via `app/core/config.py` settings and configurable via `.env`:
-
-| Setting | Type | Default | Unit | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| `MAX_LOG_SIZE_BYTES` | `int` | `10,485,760` | Bytes (10 MB) | Maximum allowed UTF-8 encoded payload size. Multi-byte Unicode characters are measured by UTF-8 byte length, not string length. |
-| `MAX_LOG_LINES` | `int` | `20,000` | Physical Lines | Maximum number of physical lines permitted in a single log payload. |
-| `MAX_LOG_LINE_LENGTH` | `int` | `16,384` | Characters | Maximum character length of any single log line to guard against memory exhaustion. |
-| `ALLOW_PARTIAL_ANALYSIS` | `bool` | `False` | Boolean | Whether to accept truncated analysis when limits are exceeded (defaults to strict rejection). |
-
-### Canonical Line Splitting & Trailing Newline Policy
-
-To eliminate line-number discrepancies across the pipeline, LogLens AI defines canonical line splitting via `app/utils/line_references.py:split_source_lines(text: str) -> list[str]`:
-- Uses Python's standard `splitlines()`.
-- Recognizes `\n`, `\r\n`, and `\r`.
-- A file ending in a single trailing newline (`"line 1\nline 2\n"`) has exactly **2 lines**.
-- Consecutive trailing newlines (`"line 1\n\n"`) represent distinct empty lines and have **2 lines** (line 1: `"line 1"`, line 2: `""`).
-- Line indices are strictly **1-based** throughout parser, group occurrences, and integrity checks.
-
-### Input Validation Errors vs. Parser Warnings
-
-LogLens AI maintains a strict boundary between invalid input and benign malformed logs:
+The AI triage layer converts deterministic failure groups into structured, actionable debugging summaries while guaranteeing evidence integrity:
 
 ```
-[ Raw Input ] ──> validate_log_input() ──┬──> Fails limit / encoding / empty ──> Raises InputValidationError (Halt)
-                                         │
-                                         └──> Valid input (even if noisy/unstructured)
-                                                      │
-                                                      ▼
-                                                parse_log_text()
-                                                      │
-                                                      ├──> Corrupted timestamps: Kept, timestamp=raw, warning emitted
-                                                      ├──> Truncated JSON lines: Kept as raw text, level=None/inferred
-                                                      ├──> Legacy text/banners: Kept as LineCategory.UNKNOWN
-                                                      └──> Non-fatal parse errors: Recorded in ParsingResult.warnings
+[ FailureAnalysisResult ] ────────────┐
+                                      ▼
+                      [ Step 1: Prompt Builder ]
+                      - Bounded group & line selection (LLM_MAX_FAILURE_GROUPS, LLM_MAX_EVIDENCE_LINES)
+                      - Conservative secret redaction (API keys, bearer tokens, passwords)
+                      - Untrusted log content serialized into <LOG_EVIDENCE> JSON block
+                                      │
+                                      ▼
+                      [ Step 2: Provider Invocation ]
+                      - Bounded request timeout (LLM_TIMEOUT_SECONDS)
+                      - Standardized LLMProvider interface (MockLLMProvider, OpenAIProvider)
+                                      │
+                      ┌───────────────┴───────────────┐
+                      │ On Success                    │ On Timeout / Auth / Network / RateLimit
+                      ▼                               ▼
+        [ Step 3: Pydantic Validation ]     [ Step 5: Deterministic Fallback ]
+        - Validates AIAnalysis schema       - Derives insights from grouping metrics
+        - Forbids unknown fields            - Emits verified first-seen references
+        - Enforces confidence & bounds      - Marks analysis_source="fallback"
+                      │
+                      ▼
+        [ Step 4: Evidence Verification ]
+        - Verifies cited lines exist (1..N)
+        - Verifies excerpts match source lines
+        - Verifies event IDs & fingerprints
+                      │
+          ┌───────────┴───────────┐
+          │ Pass                  │ Fail
+          ▼                       ▼
+   [ AIAnalysisResult ]    [ Deterministic Fallback ]
+   analysis_source="llm"   analysis_source="fallback"
 ```
 
-- **Input Validation Errors (`InputValidationError`):** Raised when input cannot be safely processed (e.g., `EMPTY_LOG_INPUT`, `INVALID_ENCODING`, `LOG_TOO_LARGE`, `TOO_MANY_LOG_LINES`, `LOG_LINE_TOO_LONG`).
-- **Parser Warnings:** Malformed timestamps (`2026-99-99 25:61:99`), broken JSON, and unrecognized formats remain processable and are retained without crashing.
+### Supported Providers & Factory
+The architecture decouples the core application from specific AI vendors via the `LLMProvider` interface:
+- **`MockLLMProvider`:** Fully offline, deterministic mock provider for testing and environments without external network access. Supports custom response injection, latency simulation, and error injection.
+- **`OpenAIProvider`:** Production provider adapter calling the OpenAI Chat Completions API with structured JSON responses (`gpt-4o-mini`, `gpt-4o`). Translates HTTP status codes (401, 403, 429, 5xx) to provider-independent exceptions without exposing credentials.
+- **Extensible Factory:** `get_llm_provider(settings)` resolves the active provider from configuration.
+
+### Configurable LLM Settings
+
+| Setting | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `LLM_ENABLED` | `bool` | `False` | Master switch for LLM requests. When `False`, returns deterministic fallback immediately. |
+| `LLM_PROVIDER` | `str \| None` | `None` | Provider identifier: `'mock'` or `'openai'`. |
+| `LLM_API_KEY` | `str \| None` | `None` | Provider secret key (never required for offline operation or tests). |
+| `LLM_MODEL` | `str \| None` | `'gpt-4o-mini'` | Model identifier. |
+| `LLM_TIMEOUT_SECONDS` | `float` | `30.0` | Strict timeout ceiling for provider network requests. |
+| `LLM_MAX_OUTPUT_TOKENS` | `int` | `1200` | Maximum token limit for model response. |
+| `LLM_MAX_FAILURE_GROUPS`| `int` | `10` | Maximum failure groups included in model prompt (sorted by recurrence). |
+| `LLM_MAX_EVIDENCE_LINES`| `int` | `80` | Maximum evidence lines included in prompt. |
+| `LLM_MAX_PROMPT_CHARS`  | `int` | `30000` | Maximum character limit for constructed prompt. |
 
 ---
 
-## 3. Evidence Integrity Verification
+## 3. Strict Pydantic Response Schemas
 
-Before any `ParsingResult` or `FailureAnalysisResult` is exposed to users or downstream LLM workflows, it is passed through `validate_parsing_result()` or `validate_analysis_result()`:
+All model responses must conform to `AIAnalysis` (`extra="forbid"`):
 
-1. **Source Line Bounds:** Every line number $L$ in an entry or event must satisfy $1 \le L \le \text{total\_lines}$.
-2. **Source Line Fidelity:** The `raw_line` content stored in the model must match `canonical_lines[L - 1]` character-for-character.
-3. **Range Validity:** For every failure event, `start_line <= primary_line <= end_line`.
-4. **Unique Event ID Association:** Each `failure_event_id` is unique and points to an existing event.
-5. **Group Occurrences Consistency:**
-   - Every group occurrence links to an existing failure event.
-   - Group `occurrence_count == len(occurrences)`.
-   - `first_seen_line == min(occurrences.primary_line)` and `last_seen_line == max(occurrences.primary_line)`.
-   - Group `fingerprint` is verified to be a valid 64-character hex SHA-256 string.
-6. **Aggregate Metrics Verification:**
-   - `total_log_lines == parsing_result.total_lines`
-   - `total_failure_events == sum(g.occurrence_count)`
-   - `unique_failure_groups == len(failure_groups)`
-   - `repeated_failure_groups == count(g where g.occurrence_count > 1)`
-   - `most_frequent_failure_count == max(g.occurrence_count)`
+```python
+class EvidenceReference(BaseModel):
+    line_number: int  # ge=1, le=1_000_000
+    excerpt: str  # min_length=1, max_length=2000
+    failure_event_id: str | None = None
+    fingerprint: str | None = None
 
-If any check fails, `EvidenceIntegrityError` is raised (or an `EvidenceValidationResult` with `is_valid=False` and structured `ValidationIssue` items is returned).
+
+class LikelyCause(BaseModel):
+    description: str
+    reasoning: str
+    evidence_refs: list[EvidenceReference]
+
+
+class RecommendedAction(BaseModel):
+    action: str
+    rationale: str
+    priority: Literal["high", "medium", "low"]
+    evidence_refs: list[EvidenceReference]
+
+
+class AIAnalysis(BaseModel):
+    summary: str
+    likely_causes: list[LikelyCause]
+    recommended_actions: list[RecommendedAction]
+    confidence: float  # ge=0.0, le=1.0
+    limitations: list[str]
+    evidence_refs: list[EvidenceReference]
+```
 
 ---
 
-## 4. End-to-End Validated Analysis Example
+## 4. Source Evidence Verification Policy
 
+AI-generated references are untrusted until verified:
+1. **Line Number Range:** $1 \le \text{line\_number} \le \text{total\_lines}$.
+2. **Excerpt Content:** Must faithfully match the source log line (or its model-visible redacted representation).
+3. **Entity Links:** Any cited `failure_event_id` or `fingerprint` must exist in the deterministic analysis.
+4. **Integrity Interception:** If any reference is invalid or hallucinated, the analysis is rejected and deterministic fallback is invoked with reason `"EVIDENCE_VERIFICATION_FAILED"`.
+
+---
+
+## 5. Privacy & Secret Redaction
+
+Prompt building applies conservative regex redaction before sending excerpts to an external LLM:
+- **API Keys:** `sk-[a-zA-Z0-9_-]{20,}` $\rightarrow$ `[REDACTED_API_KEY]`
+- **Bearer Tokens:** `Bearer [a-zA-Z0-9_\-\.]{20,}` $\rightarrow$ `Bearer [REDACTED_TOKEN]`
+- **Passwords / Secrets:** `password="xyz"`, `secret="xyz"` $\rightarrow$ `password="[REDACTED]"`
+- **Private Keys:** PEM private key blocks $\rightarrow$ `[REDACTED_PRIVATE_KEY]`
+
+> [!IMPORTANT]
+> Redaction is a defense-in-depth measure. Full raw prompts and raw responses are never logged in application logs or exception traces.
+
+---
+
+## 6. Programmatic Usage Examples
+
+### Running AI Analysis with Mock Provider (Offline)
 ```python
 from pathlib import Path
-from app.services.evidence_validator import run_validated_analysis
+from app.core.config import Settings
+from app.services.grouping import analyze_failures
+from app.services.llm import MockLLMProvider, analyze_failures_with_ai
+from app.services.log_parser import parse_log_text
 
 log_text = Path("tests/fixtures/recurring_failures.log").read_text(encoding="utf-8")
+analysis = analyze_failures(parse_log_text(log_text))
 
-# run_validated_analysis executes:
-# 1. validate_log_input (byte, line, character limits, encoding)
-# 2. parse_log_text (1-based entries, stack traces, failure events)
-# 3. analyze_failures (fingerprinting, grouping, metrics)
-# 4. validate_analysis_result (full evidence integrity verification)
-analysis = run_validated_analysis(log_text)
+settings = Settings(LLM_ENABLED=True, LLM_PROVIDER="mock", _env_file=None)
+ai_result = analyze_failures_with_ai(
+    analysis_result=analysis,
+    raw_log=log_text,
+    settings=settings,
+)
 
-print(f"Total lines verified: {analysis.metrics.total_log_lines}")
-print(f"Unique failure groups: {analysis.metrics.unique_failure_groups}")
-print(f"Repeated failures: {analysis.metrics.repeated_failure_events}")
+print(f"Source: {ai_result.analysis_source}")  # 'llm'
+print(f"Summary: {ai_result.analysis.summary}")
+print(f"Confidence: {ai_result.analysis.confidence}")
+print(f"Verified Citations: {ai_result.verified_evidence_count}")
 ```
 
-### Representative Invalid-Input Validation Error Example
-
-When an input violates configured safety boundaries:
-
+### Deterministic Fallback Output (When LLM is Disabled or Fails)
 ```python
-from app.core.exceptions import InputValidationError
-from app.services.input_validator import validate_log_input
+settings = Settings(LLM_ENABLED=False, _env_file=None)
+ai_result = analyze_failures_with_ai(
+    analysis_result=analysis, raw_log=log_text, settings=settings
+)
 
-try:
-    validate_log_input("   \n\n\t   ")
-except InputValidationError as err:
-    print(err.to_dict())
-```
-
-**Output:**
-```json
-{
-  "code": "EMPTY_LOG_INPUT",
-  "message": "Log input is empty or contains only whitespace.",
-  "line_number": null,
-  "limit": null,
-  "actual": null
-}
-```
-
-When a single line exceeds `MAX_LOG_LINE_LENGTH`:
-```json
-{
-  "code": "LOG_LINE_TOO_LONG",
-  "message": "Line 42 exceeds maximum allowed character length (16384 characters).",
-  "line_number": 42,
-  "limit": 16384,
-  "actual": 25000
-}
+print(f"Source: {ai_result.analysis_source}")  # 'fallback'
+print(f"Reason: {ai_result.fallback_reason}")  # 'LLM_DISABLED'
+print(
+    f"Summary: {ai_result.analysis.summary}"
+)  # 'Deterministic failure analysis identified 4 failure event(s)...'
 ```
 
 ---
 
-## 5. Security & Privacy Considerations
+## 7. Known Limitations
 
-- **Diagnostics Safety:** Validation errors and issues return line numbers, counts, and limit definitions. They **never** include full submitted raw logs or sensitive tokens in exception messages to avoid accidental leaking in monitoring systems or HTTP error responses.
-- **Resource Protection:** Payloads exceeding byte or line thresholds are rejected before invoking regex evaluators or JSON parsers, preventing Regular Expression Denial of Service (ReDoS) or memory exhaustion.
-
----
-
-## 6. Known Limitations
-
-- **Streaming / Chunked Logs:** Current validation processes complete in-memory strings or bytes. Streaming parsing for multi-gigabyte files is out of scope for the current phase.
-- **Log Masking / Redaction:** Automatic redaction of credentials and PII within log lines will be coordinated with the LLM triage pipeline in Phase 5.
+- **Hypotheses vs. Proof:** Model-generated root causes are structured hypotheses, not confirmed diagnoses. Developers should review cited evidence lines before taking disruptive actions.
+- **Redaction Coverage:** Automated regex redaction catches common credential formats; proprietary tokens or unusual formats may require manual sanitization before submission.
 
 ---
 
-## 7. Technology Stack
+## 8. Technology Stack
 
-### Backend & Core
-- **Language:** Python 3.11+ (Tested on Python 3.12)
-- **Data Validation:** Pydantic v2 & Pydantic-Settings
-- **Environment Management:** python-dotenv
-
-### Algorithms & Services
-- Python Standard Library (`re`, `hashlib`, `json`, `enum`, `collections`)
-- Deterministic SHA-256 failure fingerprinting and conservative variable normalization
-- Dual-stage input and evidence integrity validators
-
-### Quality & Testing
-- **Test Framework:** pytest & pytest-cov (192 passing tests, 91% code coverage)
-- **Linter & Formatter:** Ruff (100% compliant)
+- **Core & Runtime:** Python 3.11+, Pydantic v2, Pydantic-Settings, python-dotenv
+- **HTTP Transport:** requests
+- **Testing:** pytest, pytest-cov (245 passing tests, 91% code coverage)
+- **Linting & Code Quality:** Ruff (100% compliant)
 
 ---
 
-## 8. Installation & Verification
+## 9. Verification Commands
 
 ```bash
-# Clone repository and enter directory
-git clone <repo-url>
-cd LogCheck
-
-# Create and activate virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run all 192 automated unit and integration tests
+# Run complete test suite (all tests run completely offline without an API key)
 pytest
 
-# Run tests with statement and branch coverage
+# Measure statement and branch coverage
 pytest --cov=app --cov-report=term-missing
 
 # Run code style and lint checks
@@ -213,22 +221,16 @@ ruff format --check .
 
 ---
 
-## 9. Implementation Roadmap
+## 10. Implementation Roadmap
 
 - [x] **Phase 1: Project Setup & Sample Logs**
-  - Scaffolding, configuration management, and initial test suite.
 - [x] **Phase 2: Core Log Parsing & Failure Detection**
-  - Line-by-line parsing, level normalization, Python/Java tracebacks.
-  - 1-based source line mapping.
 - [x] **Phase 3: Failure Fingerprinting & Grouping**
-  - Variable normalization (UUIDs, request IDs, hex addresses).
-  - Deterministic SHA-256 fingerprinting.
-  - Multi-occurrence failure grouping and recurrence metrics.
 - [x] **Phase 4: Input Validation & Evidence Integrity**
-  - Strict pre-parse size, line-count, and line-length limits.
-  - Canonical line splitting semantics (`split_source_lines`).
-  - Evidence integrity verification on entries, events, groups, and metrics.
-- [ ] **Phase 5: LLM Service & Report Generation**
-  - Provider-agnostic LLM interface with strict evidence validation.
+- [x] **Phase 5: LLM Service & Report Generation**
+  - Provider abstraction (`LLMProvider`, `MockLLMProvider`, `OpenAIProvider`).
+  - Strict Pydantic response schemas (`AIAnalysis`, `LikelyCause`, `RecommendedAction`).
+  - Bounded prompt construction with secret redaction.
+  - Evidence reference verification.
+  - Deterministic fallback analysis.
 - [ ] **Phase 6: Streamlit Dashboard & REST API**
-  - Interactive web UI with side-by-side evidence inspection.

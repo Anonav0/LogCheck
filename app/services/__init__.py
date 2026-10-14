@@ -27,6 +27,18 @@ from app.services.input_validator import (
     validate_log_file_bytes,
     validate_log_input,
 )
+from app.services.llm import (
+    AIAnalysis,
+    AIAnalysisResult,
+    EvidenceReference,
+    LikelyCause,
+    MockLLMProvider,
+    OpenAIProvider,
+    RecommendedAction,
+    analyze_failures_with_ai,
+    build_deterministic_fallback,
+    get_llm_provider,
+)
 from app.services.log_parser import LogParser, parse_log_text
 from app.services.stack_trace_parser import (
     is_java_caused_by,
@@ -38,9 +50,18 @@ from app.services.stack_trace_parser import (
 )
 
 __all__ = [
+    "AIAnalysis",
+    "AIAnalysisResult",
+    "EvidenceReference",
     "FailureSignature",
+    "LikelyCause",
     "LogParser",
+    "MockLLMProvider",
+    "OpenAIProvider",
+    "RecommendedAction",
     "analyze_failures",
+    "analyze_failures_with_ai",
+    "build_deterministic_fallback",
     "compute_analysis_metrics",
     "detect_assertion_failure",
     "detect_java_exception",
@@ -48,6 +69,7 @@ __all__ = [
     "detect_test_failure_indicator",
     "extract_failure_signature",
     "generate_fingerprint",
+    "get_llm_provider",
     "group_failures",
     "is_java_caused_by",
     "is_java_stack_frame",

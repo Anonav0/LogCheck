@@ -90,6 +90,10 @@ def clean_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.delenv("LLM_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("LLM_MAX_OUTPUT_TOKENS", raising=False)
+    monkeypatch.delenv("LLM_MAX_FAILURE_GROUPS", raising=False)
+    monkeypatch.delenv("LLM_MAX_EVIDENCE_LINES", raising=False)
+    monkeypatch.delenv("LLM_MAX_PROMPT_CHARS", raising=False)
 
     settings = Settings(_env_file=None)
     yield settings

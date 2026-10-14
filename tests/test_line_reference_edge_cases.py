@@ -124,4 +124,3 @@ class TestLineReferenceUtilityEdgeCases:
         assert validate_line_numbers([2], 1) is False
         assert validate_line_numbers([0], 1) is False
         assert validate_line_numbers([1, 2, 3], -5) is False
-

@@ -67,4 +67,3 @@ class EvidenceValidationResult(BaseModel):
     validated_groups_count: int = Field(
         default=0, ge=0, description="Total failure groups verified."
     )
-

@@ -1,0 +1,34 @@
+2026-10-14 09:15:01,001 [INFO] app.gateway: Received request req-a1b2c3d4 for /api/v1/users/42
+2026-10-14 09:15:01,114 [ERROR] app.services.users: Database connection failed for request req-a1b2c3d4
+Traceback (most recent call last):
+  File "/srv/app/services/users.py", line 58, in get_user
+    return await db.fetch_one("SELECT * FROM users WHERE id = :id", {"id": user_id})
+  File "/srv/app/database/driver.py", line 112, in fetch_one
+    raise DatabaseConnectionError("Connection lost to database cluster primary")
+app.database.exceptions.DatabaseConnectionError: Connection lost to database cluster primary
+2026-10-14 09:15:02,400 [INFO] app.gateway: Received request req-e5f6g7h8 for /api/v1/users/99
+2026-10-14 09:15:02,510 [ERROR] app.services.users: Database connection failed for request req-e5f6g7h8
+Traceback (most recent call last):
+  File "/srv/app/services/users.py", line 58, in get_user
+    return await db.fetch_one("SELECT * FROM users WHERE id = :id", {"id": user_id})
+  File "/srv/app/database/driver.py", line 112, in fetch_one
+    raise DatabaseConnectionError("Connection lost to database cluster primary")
+app.database.exceptions.DatabaseConnectionError: Connection lost to database cluster primary
+2026-10-14 09:15:03,120 [INFO] app.gateway: Received request req-9a8b7c6d for /api/v1/orders/create
+2026-10-14 09:15:03,245 [ERROR] app.services.orders: Request validation failed for request req-9a8b7c6d
+Traceback (most recent call last):
+  File "/srv/app/services/orders.py", line 32, in create_order
+    payload = OrderPayload.model_validate(raw_data)
+  File "/srv/app/models/orders.py", line 18, in model_validate
+    raise ValidationError("Missing required field 'shipping_address'")
+app.exceptions.ValidationError: Missing required field 'shipping_address'
+2026-10-14 09:15:04,800 [INFO] app.gateway: Received request req-11223344 for /api/v1/users/105
+2026-10-14 09:15:04,912 [ERROR] app.services.users: Database connection failed for request req-11223344
+Traceback (most recent call last):
+  File "/srv/app/services/users.py", line 58, in get_user
+    return await db.fetch_one("SELECT * FROM users WHERE id = :id", {"id": user_id})
+  File "/srv/app/database/driver.py", line 112, in fetch_one
+    raise DatabaseConnectionError("Connection lost to database cluster primary")
+app.database.exceptions.DatabaseConnectionError: Connection lost to database cluster primary
+2026-10-14 09:15:05,000 [INFO] app.gateway: Batch request cycle completed
+

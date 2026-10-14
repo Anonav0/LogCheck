@@ -1,0 +1,28 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.1.1, pluggy-1.4.0
+rootdir: /workspace/loglens-ai
+configfile: pyproject.toml
+collected 5 items
+
+tests/test_auth.py::test_login_success PASSED                            [ 20%]
+tests/test_auth.py::test_token_refresh PASSED                            [ 40%]
+tests/test_orders.py::test_create_order PASSED                           [ 60%]
+tests/test_orders.py::test_discount_calculation FAILED                   [ 80%]
+tests/test_orders.py::test_cancel_order PASSED                          [100%]
+
+=================================== FAILURES ===================================
+___________________________ test_discount_calculation ___________________________
+
+    def test_discount_calculation():
+        cart = ShoppingCart(user_id="user_551")
+        cart.add_item("item_laptop", price=1200.0)
+        cart.apply_coupon("FALL20")
+>       assert cart.total == 960.0
+E       AssertionError: assert 1020.0 == 960.0
+E        +  where 1020.0 = ShoppingCart(total=1020.0, discount=15.0).total
+
+tests/test_orders.py:45: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_orders.py::test_discount_calculation - AssertionError: assert 1020.0 == 960.0
+========================= 1 failed, 4 passed in 0.42s ==========================
+

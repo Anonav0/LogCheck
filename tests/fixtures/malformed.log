@@ -1,0 +1,8 @@
+2026-99-99 25:61:99 [UNKNOWN_LEVEL] system.kernel: System clock drift detected with corrupted timestamp header
+This is a completely unstructured line without timestamp, level, or metadata emitted by legacy subshell script.
+
+[2026/10/14-09:40:00] !!! UNUSUAL_ALERT !!! subsystem=io message="Disk write threshold nearing capacity on /mnt/data"
+Note: The error handling policy has been updated successfully for all worker queues.
+System operational with 0 errors reported during baseline audit verification.
+2026-10-14 09:42:15,300 [INFO] worker.pool: Normal operational heartbeat message
+

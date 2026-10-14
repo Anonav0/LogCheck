@@ -1,0 +1,17 @@
+2026-10-14 10:30:00,010 [INFO] worker.dispatcher: Task job-981 dispatched to node-a
+2026-10-14 10:30:01,230 [ERROR] worker.runner: S3 bucket access denied for task job-981
+Traceback (most recent call last):
+  File "/srv/worker/runner.py", line 64, in execute_task
+    s3_client.download_file(bucket="data-lake", key=key, target=local_path)
+  File "/srv/worker/storage.py", line 112, in download_file
+    raise StorageAccessDenied("Access Denied: Invalid IAM credentials for data-lake")
+worker.storage.StorageAccessDenied: Access Denied: Invalid IAM credentials for data-lake
+2026-10-14 10:30:05,010 [INFO] worker.dispatcher: Task job-982 dispatched to node-b
+2026-10-14 10:30:06,190 [ERROR] worker.runner: S3 bucket access denied for task job-982
+Traceback (most recent call last):
+  File "/srv/worker/runner.py", line 64, in execute_task
+    s3_client.download_file(bucket="data-lake", key=key, target=local_path)
+  File "/srv/worker/storage.py", line 112, in download_file
+    raise StorageAccessDenied("Access Denied: Invalid IAM credentials for data-lake")
+worker.storage.StorageAccessDenied: Access Denied: Invalid IAM credentials for data-lake
+

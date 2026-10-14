@@ -1,0 +1,11 @@
+2026-10-14 10:00:00,123 [INFO] order_service.api: Received order submission order_id=ord_99011
+2026-10-14 10:00:00,450 [WARNING] order_service.inventory: Warehouse partition node-3 slow response (450ms)
+2026-10-14 10:00:01,002 [ERROR] order_service.billing: Payment processor failed to charge card token tok_visa_4242
+Traceback (most recent call last):
+  File "/opt/services/billing/processor.py", line 87, in charge
+    response = gateway.post("/v1/charges", payload=payload, timeout=3.0)
+  File "/opt/services/billing/gateway.py", line 45, in post
+    raise PaymentGatewayError("503 Service Unavailable: Gateway upstream overloaded")
+billing.exceptions.PaymentGatewayError: 503 Service Unavailable: Gateway upstream overloaded
+2026-10-14 10:00:01,110 [INFO] order_service.api: Order ord_99011 marked as PAYMENT_FAILED
+

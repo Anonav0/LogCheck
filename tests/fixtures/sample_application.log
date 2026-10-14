@@ -1,0 +1,16 @@
+2026-10-14 08:30:01,102 [INFO] app.server: Starting LogLens worker process (PID: 41208)
+2026-10-14 08:30:01,245 [INFO] app.database: Initializing connection pool with min_size=5, max_size=20
+2026-10-14 08:30:02,819 [WARNING] app.cache: Redis connection timeout on host redis-primary.internal:6379, falling back to local memory cache
+2026-10-14 08:30:05,014 [INFO] app.services.payment: Processing checkout transaction tx-99128
+2026-10-14 08:30:05,432 [ERROR] app.database: Failed to acquire connection from pool: timeout waiting for connection
+Traceback (most recent call last):
+  File "/srv/app/services/payment.py", line 142, in process_transaction
+    async with db.transaction() as conn:
+  File "/srv/app/database/connection.py", line 88, in transaction
+    conn = await self.pool.acquire(timeout=5.0)
+  File "/srv/app/database/pool.py", line 214, in acquire
+    raise ConnectionTimeoutError("Timed out waiting for database connection from pool after 5.0s")
+app.database.exceptions.ConnectionTimeoutError: Timed out waiting for database connection from pool after 5.0s
+2026-10-14 08:30:05,510 [INFO] app.services.payment: Transaction tx-99128 aborted due to database failure
+2026-10-14 08:30:06,001 [INFO] app.server: Health check passed for HTTP server on port 8000
+

@@ -94,4 +94,3 @@ def clean_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
     settings = Settings(_env_file=None)
     yield settings
     get_settings.cache_clear()
-

@@ -94,4 +94,3 @@ def get_settings() -> Settings:
     Use get_settings.cache_clear() in tests to reset state when needed.
     """
     return Settings()
-

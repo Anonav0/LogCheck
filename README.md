@@ -7,8 +7,8 @@
 **LogLens AI** is an intelligent log analysis engine designed to help software engineers rapidly inspect application and test logs, isolate errors and exceptions, extract multiline stack traces, group recurring failures via deterministic fingerprinting, and generate actionable, evidence-backed debugging summaries using LLMs.
 
 > [!NOTE]
-> **Development Status: Phase 1 Completed (Project Setup & Sample Logs)**
-> The project scaffolding, environment configuration, testing framework, and sample log fixtures are fully established. Core log parsing, failure detection, fingerprinting, grouping, LLM integration, REST API, and Streamlit dashboard will be implemented in subsequent phases.
+> **Development Status: Phase 2 Completed (Log Parsing & Stack Trace Extraction)**
+> Deterministic line-by-line parsing, level normalization, Python/Java traceback extraction, assertion failure identification, and 1-based source line mapping are fully implemented. Failure fingerprinting, recurring-failure grouping, LLM integration, REST API, and Streamlit dashboard will be implemented in subsequent phases.
 
 ---
 
@@ -16,9 +16,9 @@
 
 Modern software applications and automated test suites generate verbose, noisy logs. When incidents or test suite failures occur:
 - Developers must manually sift through thousands of lines to spot relevant errors.
-- The same underlying root cause often appears dozens or hundreds of times with slight parameter variations (such as distinct request IDs or timestamps), cluttering investigation.
-- Multiline exception stack traces are difficult to parse deterministically without losing context.
-- While LLMs can provide insightful triage summaries, raw logs are often too large to send directly, may contain sensitive data, and LLM responses risk "hallucinating" line references or root causes if not bound to verifiable evidence.
+- The same underlying root cause often appears dozens or hundreds of times with slight parameter variations, cluttering investigation.
+- Multiline exception stack traces are difficult to parse deterministically without losing context or absorbing subsequent valid logs.
+- While LLMs can provide insightful triage summaries, raw logs are often too large to send directly, and LLM responses risk "hallucinating" line references or root causes if not bound to verifiable evidence.
 
 **LogLens AI** addresses these challenges through a hybrid architecture:
 1. **Deterministic Processing Pipeline:** Parses lines, preserves exact 1-based source line numbers, extracts complete stack traces, and fingerprints failures deterministically into recurring failure groups.
@@ -27,199 +27,225 @@ Modern software applications and automated test suites generate verbose, noisy l
 
 ---
 
-## 2. Planned Capabilities
+## 2. Phase 2 Capabilities & Parser Architecture
 
-- **Multi-Format Ingestion:** Accept raw text, file uploads, and API payloads for Python tracebacks, standard loggers, and test runners.
-- **Robust Validation:** Enforce size limits (default 1 MiB / 20,000 lines), UTF-8 verification, and input sanitation.
-- **Deterministic Fingerprinting:** Group recurring failures by normalizing volatile variables (UUIDs, request IDs, memory addresses) while preserving structural exception signatures.
-- **Verifiable Evidence References:** Anchor every error, failure group, and AI finding to exact 1-based source line numbers (e.g., `L14-L22`).
-- **Provider-Agnostic LLM Layer:** Support pluggable LLM backends (OpenAI, Anthropic, or mock) with strict JSON schema validation.
-- **Developer Interfaces:** Expose a FastAPI REST API and a lightweight Streamlit dashboard with side-by-side log exploration.
+Phase 2 introduces a completely offline, deterministic log parsing engine (`app/services/log_parser.py`):
+
+```
+Raw Multiline Log Text
+         │
+         ▼
+[ Step 1: Line Ingestion & Indexing ] ──> Preserves exact 1-based line numbers & raw content
+         │
+         ▼
+[ Step 2: Metadata & Level Parsing ] ──> Timestamp, logger, level extraction (bracket, spaced, JSON)
+         │
+         ▼
+[ Step 3: Exception & Trace Extraction ]
+   ├── Python Tracebacks: Headers, frames, code context, chaining markers, terminal exceptions
+   ├── Java Stack Traces: Exception declarations, `at` frames, `Caused by:`, suppressed exceptions
+   └── Test Runner Output: Pytest & Unittest failure sections, assertion messages
+         │
+         ▼
+[ Step 4: Event Assembly & Line Linking ] ──> Groups lines into logical `FailureEvent`s; links `ParsedLogEntry`
+         │
+         ▼
+[ Step 5: Summary Metrics Calculation ] ──> total_lines, error_count, failure_event_count, etc.
+```
+
+### Supported Log Formats
+- **Standard Bracketed Logs:** `2026-10-14 08:30:01,102 [INFO] app.server: Starting worker`
+- **Spaced Logger Format:** `2026-10-14 10:15:30 INFO application.worker - Job started`
+- **Bracket-Prefixed Severity:** `[ERROR] PaymentService - Transaction failed`
+- **Colon-Prefixed Severity:** `ERROR: Unable to connect to host`
+- **JSON Structured Lines:** `{"timestamp": "...", "level": "ERROR", "logger": "...", "message": "..."}`
+- **Corrupted / Custom Streams:** `[2026/10/14-09:40:00] !!! UNUSUAL_ALERT !!! ...`
+- **Unstructured / Malformed Lines:** Emitted by subshells or plain text; preserved without crashing.
+
+### Key Distinctions
+- **Log Entry vs. Failure Event:** A log entry (`ParsedLogEntry`) represents a single physical line of text with its line number and parsed metadata. A failure event (`FailureEvent`) represents a logical failure or exception that may span multiple lines (an explicit error line, traceback header, 10 stack frames, code context lines, and terminal exception declaration).
+- **False-Positive Resistance:** Ordinary informational messages containing the word "error" or "warning" (e.g. `INFO app - The previous error has been resolved`) retain their `INFO` severity and never generate false failure events.
+- **Traceback Boundaries:** Parsers strictly terminate traceback consumption when a subsequent structured log entry or unindented text is encountered. Subsequent log lines are never absorbed into preceding tracebacks.
 
 ---
 
-## 3. Technology Stack
+## 3. Real Parser Output Example
+
+Given the raw log snippet:
+
+```log
+2026-10-14 08:30:05,432 [ERROR] app.database: Failed to acquire connection
+Traceback (most recent call last):
+  File "/srv/app/services/payment.py", line 142, in process_transaction
+    async with db.transaction() as conn:
+app.database.exceptions.ConnectionTimeoutError: Timed out waiting for connection
+2026-10-14 08:30:06,001 [INFO] app.server: Health check passed
+```
+
+Executing `parse_log_text(log)` produces:
+
+```json
+{
+  "total_lines": 6,
+  "entries": [
+    {
+      "line_number": 1,
+      "raw_line": "2026-10-14 08:30:05,432 [ERROR] app.database: Failed to acquire connection",
+      "timestamp": "2026-10-14 08:30:05,432",
+      "level": "ERROR",
+      "logger_name": "app.database",
+      "message": "Failed to acquire connection",
+      "category": "error",
+      "failure_event_id": "event-1"
+    },
+    {
+      "line_number": 2,
+      "raw_line": "Traceback (most recent call last):",
+      "timestamp": null,
+      "level": null,
+      "logger_name": null,
+      "message": "Traceback (most recent call last):",
+      "category": "traceback_header",
+      "failure_event_id": "event-1"
+    },
+    {
+      "line_number": 3,
+      "raw_line": "  File \"/srv/app/services/payment.py\", line 142, in process_transaction",
+      "timestamp": null,
+      "level": null,
+      "logger_name": null,
+      "message": "File \"/srv/app/services/payment.py\", line 142, in process_transaction",
+      "category": "stack_frame",
+      "failure_event_id": "event-1"
+    },
+    {
+      "line_number": 4,
+      "raw_line": "    async with db.transaction() as conn:",
+      "timestamp": null,
+      "level": null,
+      "logger_name": null,
+      "message": "    async with db.transaction() as conn:",
+      "category": "stack_frame",
+      "failure_event_id": "event-1"
+    },
+    {
+      "line_number": 5,
+      "raw_line": "app.database.exceptions.ConnectionTimeoutError: Timed out waiting for connection",
+      "timestamp": null,
+      "level": null,
+      "logger_name": null,
+      "message": "app.database.exceptions.ConnectionTimeoutError: Timed out waiting for connection",
+      "category": "exception",
+      "failure_event_id": "event-1"
+    },
+    {
+      "line_number": 6,
+      "raw_line": "2026-10-14 08:30:06,001 [INFO] app.server: Health check passed",
+      "timestamp": "2026-10-14 08:30:06,001",
+      "level": "INFO",
+      "logger_name": "app.server",
+      "message": "Health check passed",
+      "category": "normal",
+      "failure_event_id": null
+    }
+  ],
+  "failure_events": [
+    {
+      "event_id": "event-1",
+      "event_type": "exception",
+      "exception_type": "ConnectionTimeoutError",
+      "message": "Timed out waiting for connection",
+      "primary_line_number": 5,
+      "start_line_number": 1,
+      "end_line_number": 5,
+      "line_numbers": [1, 2, 3, 4, 5],
+      "stack_trace": [
+        "Traceback (most recent call last):",
+        "  File \"/srv/app/services/payment.py\", line 142, in process_transaction",
+        "    async with db.transaction() as conn:",
+        "app.database.exceptions.ConnectionTimeoutError: Timed out waiting for connection"
+      ],
+      "timestamp": "2026-10-14 08:30:05,432",
+      "level": "ERROR",
+      "logger_name": "app.database"
+    }
+  ],
+  "error_count": 1,
+  "warning_count": 0,
+  "failure_event_count": 1,
+  "stack_trace_line_count": 4,
+  "parser_warnings": []
+}
+```
+
+---
+
+## 4. Current Limitations
+
+- **Binary Logs:** Only plain-text and UTF-8 encoded log files are currently supported.
+- **Java Source Lookup:** Java exception stack traces extract class names, method names, and file numbers, but do not perform classpath or source-code decompilation.
+- **Fingerprinting & Recurrence Counts:** Not yet implemented; planned for Phase 3.
+- **LLM Summaries & REST API:** Not yet implemented; planned for Phase 4.
+
+---
+
+## 5. Technology Stack
 
 ### Backend & Core
 - **Language:** Python 3.11+ (Tested on Python 3.12)
-- **API Framework (Planned):** FastAPI & Uvicorn
 - **Data Validation:** Pydantic v2 & Pydantic-Settings
 - **Environment Management:** python-dotenv
 
-### Log Processing (Upcoming)
-- Python Standard Library (`re`, `datetime`, `hashlib`, `typing`)
-- Deterministic regex-based tokenization and stack trace extraction
-
-### Frontend (Upcoming)
-- Streamlit for interactive incident triage and visualization
+### Log Processing (Phase 2)
+- Python Standard Library (`re`, `json`, `enum`)
+- Deterministic regex tokenization and traceback extraction
 
 ### Quality & Testing
-- **Test Framework:** pytest & pytest-cov
-- **Linter & Formatter:** Ruff (fast, PEP 8 compliant)
-
----
-
-## 4. Repository Structure
-
-```
-LogCheck/
-├── app/
-│   ├── __init__.py           # Package version and metadata
-│   ├── main.py               # Application entry point
-│   ├── api/                  # FastAPI routers and endpoints (Phase 4)
-│   ├── core/
-│   │   ├── __init__.py
-│   │   └── config.py         # Typed settings with validation
-│   ├── models/               # Domain and schema models (Phase 2+)
-│   ├── services/             # Parser, grouping, and LLM services (Phase 2-4)
-│   └── utils/                # Line reference and helper utilities
-├── frontend/
-│   └── .gitkeep              # Streamlit dashboard (Phase 5)
-├── tests/
-│   ├── __init__.py
-│   ├── conftest.py           # Shared test fixtures and isolated settings
-│   ├── test_project_setup.py # Scaffolding and configuration verification
-│   └── fixtures/             # Realistic test log samples
-│       ├── sample_application.log
-│       ├── sample_test_failure.log
-│       ├── recurring_failures.log
-│       └── malformed.log
-├── examples/                 # Exploratory sample logs for documentation
-│   ├── application_error.log
-│   ├── recurring_failures.log
-│   └── test_failures.log
-├── docs/                     # Architectural and API documentation
-├── .docs/                    # Project specifications and walkthroughs
-├── .env.example              # Environment configuration template
-├── .gitignore                # Git ignore rules
-├── .python-version           # Target Python version (3.12)
-├── pyproject.toml            # Canonical project configuration
-├── requirements.txt          # Pinned dependency definitions
-└── README.md                 # Project documentation
-```
-
----
-
-## 5. Prerequisites
-
-- **Linux / Ubuntu** (or compatible Unix-like OS, macOS, WSL2)
-- **Python 3.11 or Python 3.12**
-- **Git**
+- **Test Framework:** pytest & pytest-cov (86 passing tests, 89% coverage)
+- **Linter & Formatter:** Ruff
 
 ---
 
 ## 6. Installation & Quickstart
 
-### 1. Clone Repository & Create Virtual Environment
-
 ```bash
-# Clone the repository
+# Clone repository and enter directory
 git clone <repo-url>
 cd LogCheck
 
-# Create virtual environment
+# Create and activate virtual environment
 python3 -m venv .venv
-
-# Activate virtual environment
 source .venv/bin/activate
-```
 
-### 2. Install Dependencies
-
-```bash
-# Upgrade pip and install all project dependencies
-python -m pip install --upgrade pip
+# Install dependencies
 pip install -r requirements.txt
-```
 
-### 3. Configure Environment
-
-Create a `.env` file from the provided template:
-
-```bash
-cp .env.example .env
-```
-
-The application defaults to safe local development settings without requiring an LLM API key:
-
-| Variable | Default | Description |
-|---|---|---|
-| `APP_NAME` | `"LogLens AI"` | Application identifier |
-| `APP_ENV` | `"development"` | Environment name |
-| `DEBUG` | `false` | Enable verbose debug output |
-| `MAX_LOG_SIZE_BYTES` | `1048576` | Maximum log size in bytes (1 MiB) |
-| `MAX_LOG_LINES` | `20000` | Maximum line count accepted |
-| `LLM_ENABLED` | `false` | Enable/disable LLM assistance |
-| `LLM_PROVIDER` | `None` | Provider (`mock`, `openai`, etc.) |
-| `LLM_API_KEY` | `None` | Optional API key |
-| `LLM_MODEL` | `None` | Target LLM model name |
-| `LLM_TIMEOUT_SECONDS`| `30.0` | Timeout for external LLM calls |
-
----
-
-## 7. Testing & Code Quality
-
-### Running Automated Tests
-
-Run the test suite with verbose output and coverage reporting:
-
-```bash
-# Run tests
+# Run all automated tests
 pytest
 
 # Run tests with coverage
 pytest --cov=app --cov-report=term-missing
-```
 
-### Code Formatting & Linting
-
-We use [Ruff](https://github.com/astral-sh/ruff) for fast, consistent styling:
-
-```bash
-# Check code for lint violations
+# Run linting checks
 ruff check .
-
-# Check code formatting without modifying files
 ruff format --check .
-
-# Automatically apply formatting
-ruff format .
 ```
 
 ---
 
-## 8. Sample Log Fixtures
+## 7. Implementation Roadmap
 
-The repository includes four realistic log fixtures under `tests/fixtures/` and sample logs in `examples/`:
-
-1. **`sample_application.log`**: Standard microservice logs featuring INFO lifecycle events, a Redis timeout WARNING, and an unhandled `ConnectionTimeoutError` with multiline Python traceback followed by graceful recovery messages.
-2. **`sample_test_failure.log`**: A pytest runner output stream exhibiting 4 passing unit tests and 1 failing test with an explicit `AssertionError` and test summary.
-3. **`recurring_failures.log`**: High-frequency failure scenario exhibiting 3 occurrences of `DatabaseConnectionError` with variable request IDs (`req-a1b2c3d4`, `req-e5f6g7h8`, `req-11223344`) alongside a distinct `ValidationError`.
-4. **`malformed.log`**: Edge-case testing fixture containing corrupted timestamp headers, unstructured output from legacy subshells, empty lines, and benign text containing the keyword "error".
-
----
-
-## 9. Security & Privacy Notice
-
-> [!WARNING]
-> Real-world application logs frequently contain sensitive data, including API keys, passwords, database connection strings, bearer tokens, and personally identifiable information (PII).
-> 
-> - **Never** upload logs containing production secrets without scrubbing.
-> - LogLens AI provides an `LLM_ENABLED=false` configuration switch to perform 100% offline, deterministic log analysis without sending any data to third-party AI providers.
-> - When LLM assistance is enabled in future phases, only bounded, pre-filtered error evidence will be submitted to the configured provider.
-
----
-
-## 10. Implementation Roadmap
-
-- [x] **Phase 1: Project Setup & Sample Logs** *(Completed)*
+- [x] **Phase 1: Project Setup & Sample Logs**
   - Initial repository layout, dependencies, and virtual environment.
   - Typed configuration management using Pydantic Settings.
   - Realistic test log fixtures and initial verification test suite.
-  - Ruff linting and formatting configuration.
-- [ ] **Phase 2: Core Log Parsing & Failure Detection**
+- [x] **Phase 2: Core Log Parsing & Failure Detection**
   - Line-by-line parsing with 1-based source line mapping.
-  - Detection of error levels, exceptions, and multiline stack traces.
+  - Normalization of log severity levels (WARN->WARNING, FATAL->CRITICAL).
+  - Multi-line Python traceback parsing and exception-chaining preservation.
+  - Java stack trace and `Caused by:` chain extraction.
+  - Pytest assertion failures and test failure section extraction.
+  - Distinct separation of log entries vs logical failure events.
 - [ ] **Phase 3: Failure Fingerprinting & Grouping**
   - Variable normalization (UUIDs, request IDs, hex addresses).
   - Deterministic SHA-256 fingerprinting and occurrence grouping.
@@ -228,4 +254,4 @@ The repository includes four realistic log fixtures under `tests/fixtures/` and 
   - FastAPI endpoints (`/health`, `/api/v1/analyze`).
 - [ ] **Phase 5: Streamlit Dashboard & Documentation**
   - Interactive web UI with side-by-side evidence inspection.
-  - End-to-end user guide and internship portfolio documentation.
+  - End-to-end user guide and portfolio documentation.

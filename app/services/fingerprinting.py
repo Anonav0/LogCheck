@@ -133,4 +133,3 @@ def generate_fingerprint(event: FailureEvent) -> str:
     signature = extract_failure_signature(event)
     canonical = serialize_signature(signature)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-

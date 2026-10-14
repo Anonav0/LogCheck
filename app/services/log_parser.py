@@ -25,6 +25,7 @@ from app.services.stack_trace_parser import (
     is_python_stack_frame,
     is_python_traceback_header,
 )
+from app.utils.line_references import split_source_lines
 
 # Common structured log line regex patterns
 # 1. Standard timestamp + bracketed level + logger + message
@@ -67,7 +68,7 @@ class LogParser:
             return ParsingResult(total_lines=0)
 
         # 1. Split lines preserving exact source lines without line terminators
-        raw_lines = log_text.splitlines()
+        raw_lines = split_source_lines(log_text)
         total_lines = len(raw_lines)
 
         # 2. Parse individual line metadata

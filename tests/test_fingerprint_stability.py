@@ -71,4 +71,3 @@ print(generate_fingerprint(event))
             assert subprocess_fp == in_process_fp, (
                 f"Fingerprint mismatch with PYTHONHASHSEED={seed}: {subprocess_fp} != {in_process_fp}"
             )
-

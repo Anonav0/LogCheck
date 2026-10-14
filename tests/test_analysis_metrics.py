@@ -99,4 +99,3 @@ class TestAnalysisMetrics:
         assert analysis.metrics.repeated_failure_events == 3
         assert analysis.metrics.most_frequent_failure_count == 3
         assert len(analysis.failure_groups) == 2
-

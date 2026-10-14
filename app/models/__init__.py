@@ -10,9 +10,16 @@ from app.models.log_entry import (
     normalize_log_level,
 )
 from app.models.parsing_result import ParsingResult
+from app.models.validation_result import (
+    EvidenceValidationResult,
+    ValidatedLogInput,
+    ValidationIssue,
+    ValidationSeverity,
+)
 
 __all__ = [
     "AnalysisMetrics",
+    "EvidenceValidationResult",
     "FailureAnalysisResult",
     "FailureEvent",
     "FailureEventType",
@@ -22,5 +29,8 @@ __all__ = [
     "LogLevel",
     "ParsedLogEntry",
     "ParsingResult",
+    "ValidatedLogInput",
+    "ValidationIssue",
+    "ValidationSeverity",
     "normalize_log_level",
 ]

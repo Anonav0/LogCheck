@@ -7,6 +7,17 @@ from app.core.exceptions import InvalidLineReferenceError
 _REF_PATTERN = re.compile(r"^L(\d+)(?:-L?(\d+))?$")
 
 
+def split_source_lines(text: str) -> list[str]:
+    """Split raw log text into canonical source lines without line terminators.
+
+    Ensures consistent line numbering semantics across validation, parsing,
+    and evidence verification.
+    """
+    if not text:
+        return []
+    return text.splitlines()
+
+
 def format_line_reference(start_line: int, end_line: int | None = None) -> str:
     """Format a 1-based source line or line range into standard reference notation.
 

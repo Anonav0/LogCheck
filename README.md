@@ -7,8 +7,8 @@
 **LogLens AI** is an intelligent log analysis engine designed to help software engineers rapidly inspect application and test logs, isolate errors and exceptions, extract multiline stack traces, group recurring failures via deterministic fingerprinting, and generate actionable, evidence-backed debugging summaries using LLMs.
 
 > [!NOTE]
-> **Development Status: Phase 3 Completed (Failure Fingerprinting & Grouping)**
-> Deterministic failure fingerprinting (SHA-256), conservative variable normalization (UUIDs, request IDs, memory addresses), recurring failure aggregation, and aggregate failure metrics are fully implemented and verified. LLM integration, REST API, and Streamlit dashboard will be implemented in subsequent phases.
+> **Development Status: Phase 4 Completed (Input Validation & Evidence Integrity)**
+> Strict pre-parse input limits (byte size, line count, line length), UTF-8 verification, canonical line-splitting semantics, post-analysis evidence integrity validation, and failure group/metric verification are fully implemented and verified. LLM integration, REST API endpoints, and Streamlit dashboard will be implemented in subsequent phases.
 
 ---
 
@@ -16,141 +16,177 @@
 
 Modern software applications and automated test suites generate verbose, noisy logs. When incidents or test suite failures occur:
 - Developers must manually sift through thousands of lines to spot relevant errors.
-- The same underlying root cause often appears dozens or hundreds of times with slight parameter variations (such as changing request IDs, UUIDs, or timestamps), cluttering investigation.
-- Multiline exception stack traces are difficult to parse deterministically without losing context or absorbing subsequent valid logs.
-- While LLMs can provide insightful triage summaries, raw logs are often too large to send directly, and LLM responses risk "hallucinating" line references or root causes if not bound to verifiable evidence.
+- Raw log inputs can be corrupted, oversized, or contain malicious line lengths designed to cause denial of service.
+- Discrepancies between log splitters and parsers cause "off-by-one" line numbering errors.
+- Automated triage tools or LLM summarizers risk hallucinating nonexistent line numbers, mutating source lines, or reporting fabricated metrics if not verified against the original input.
 
-**LogLens AI** addresses these challenges through a hybrid architecture:
-1. **Deterministic Processing Pipeline:** Parses lines, preserves exact 1-based source line numbers, extracts complete stack traces, and fingerprints failures deterministically into recurring failure groups.
-2. **Evidence-Anchored AI Triage:** Sends bounded, structured summaries to an LLM to generate root-cause hypotheses and investigation steps, strictly validating every returned line reference against original source logs.
-3. **Graceful Fallback:** If LLM access is disabled or unavailable, the deterministic analysis remains fully functional and informative.
-
----
-
-## 2. Phase 3 Capabilities & Pipeline Architecture
-
-Phase 3 introduces a completely offline, deterministic failure fingerprinting and grouping engine:
-
-```
-Parsed FailureEvents (from Phase 2)
-              │
-              ▼
-[ Step 1: Signature Extraction ] ──────────> Extract (failure_type, exception_type, message, component)
-              │
-              ▼
-[ Step 2: Conservative Normalization ] ────> Volatile variables replaced (<UUID>, <MEMORY_ADDRESS>, <REQUEST_ID>)
-              │                              Semantic data preserved (timeouts, status codes, error codes)
-              ▼
-[ Step 3: Canonical Serialization ] ───────> Deterministic string: category=...|component=...|exception=...|message=...
-              │
-              ▼
-[ Step 4: SHA-256 Fingerprint ] ───────────> 64-character hex hash (independent of Python hash seed)
-              │
-              ▼
-[ Step 5: Failure Grouping & Aggregation ] > Aggregate occurrences, union line numbers, first/last seen
-              │
-              ▼
-[ Step 6: Deterministic Ordering ] ────────> 1. occurrence_count DESC, 2. first_seen_line ASC, 3. fingerprint ASC
-              │
-              ▼
-[ Step 7: Analysis Metrics Calculation ] ──> unique_groups, repeated_groups, repeated_events, max_count
-```
-
-### Normalization Rules
-
-Volatile parameters that vary across identical failure causes are normalized safely:
-- **UUIDs:** `550e8400-e29b-41d4-a716-446655440000` $\rightarrow$ `<UUID>`
-- **Memory Addresses:** `0x7f12ab34` $\rightarrow$ `<MEMORY_ADDRESS>`
-- **Request Identifiers:** `req-a1b2c3d4` or `request 12345` $\rightarrow$ `<REQUEST_ID>`
-- **Entity Tokens:** `tx-99128` $\rightarrow$ `<TX_ID>`, `job-981` $\rightarrow$ `<JOB_ID>`, `order_id=ord_123` $\rightarrow$ `order_id=<ORDER_ID>`
-- **Entity Phrases:** `Payment 10234` $\rightarrow$ `Payment <ENTITY_ID>`, `users/42` $\rightarrow$ `users/<ENTITY_ID>`
-
-**What is Intentionally Preserved:**
-- Timeouts and durations (`after 5.0s` vs `after 60.0s` remain distinct).
-- HTTP status codes (`503 Service Unavailable` vs `404 Not Found` remain distinct).
-- Database error codes (`ORA-00001`, `SQLSTATE 23505`).
-- Port numbers, version strings, and assertion expressions.
-
-### Failure Event vs. Failure Group
-
-- **Failure Event (`FailureEvent`):** Represents an individual occurrence of a failure within the log stream (with its own event ID, primary line number, stack trace, and timestamp).
-- **Failure Group (`FailureGroup`):** Represents a logical collection of recurring failure events sharing the same deterministic SHA-256 fingerprint.
-
-### Analysis Metrics Definitions
-
-- `total_log_lines`: Total physical lines in the log.
-- `total_error_entries`: Entries classified explicitly as ERROR or CRITICAL.
-- `total_warning_entries`: Entries classified explicitly as WARNING.
-- `total_failure_events`: Total individual failure events identified.
-- `unique_failure_groups`: Number of distinct fingerprints.
-- `repeated_failure_groups`: Groups with `occurrence_count > 1`.
-- `repeated_failure_events`: Occurrences belonging to repeated groups (`sum(count for g in groups if count > 1)`).
-- `most_frequent_failure_count`: Largest single group occurrence count.
+**LogLens AI** addresses these challenges through a strict 3-tier safety architecture:
+1. **Pre-Parse Input Validation:** Rejects empty, invalidly encoded, or oversized payloads before parsing begins, protecting computational resources.
+2. **Deterministic Processing Pipeline:** Parses lines, preserves exact 1-based source line numbers, extracts complete stack traces, and fingerprints failures deterministically into recurring failure groups.
+3. **Evidence Integrity Verification:** Verifies every line reference, raw line text, group occurrence mapping, and aggregate metric against the original source log before any result is trusted or returned.
 
 ---
 
-## 3. Real Example of End-to-End Analysis
+## 2. Input Validation Architecture (Phase 4)
 
-Processing `tests/fixtures/recurring_failures.log` through `analyze_failures()`:
+### Configurable Limits and Units
+
+All input boundaries are enforced via `app/core/config.py` settings and configurable via `.env`:
+
+| Setting | Type | Default | Unit | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `MAX_LOG_SIZE_BYTES` | `int` | `10,485,760` | Bytes (10 MB) | Maximum allowed UTF-8 encoded payload size. Multi-byte Unicode characters are measured by UTF-8 byte length, not string length. |
+| `MAX_LOG_LINES` | `int` | `20,000` | Physical Lines | Maximum number of physical lines permitted in a single log payload. |
+| `MAX_LOG_LINE_LENGTH` | `int` | `16,384` | Characters | Maximum character length of any single log line to guard against memory exhaustion. |
+| `ALLOW_PARTIAL_ANALYSIS` | `bool` | `False` | Boolean | Whether to accept truncated analysis when limits are exceeded (defaults to strict rejection). |
+
+### Canonical Line Splitting & Trailing Newline Policy
+
+To eliminate line-number discrepancies across the pipeline, LogLens AI defines canonical line splitting via `app/utils/line_references.py:split_source_lines(text: str) -> list[str]`:
+- Uses Python's standard `splitlines()`.
+- Recognizes `\n`, `\r\n`, and `\r`.
+- A file ending in a single trailing newline (`"line 1\nline 2\n"`) has exactly **2 lines**.
+- Consecutive trailing newlines (`"line 1\n\n"`) represent distinct empty lines and have **2 lines** (line 1: `"line 1"`, line 2: `""`).
+- Line indices are strictly **1-based** throughout parser, group occurrences, and integrity checks.
+
+### Input Validation Errors vs. Parser Warnings
+
+LogLens AI maintains a strict boundary between invalid input and benign malformed logs:
+
+```
+[ Raw Input ] ──> validate_log_input() ──┬──> Fails limit / encoding / empty ──> Raises InputValidationError (Halt)
+                                         │
+                                         └──> Valid input (even if noisy/unstructured)
+                                                      │
+                                                      ▼
+                                                parse_log_text()
+                                                      │
+                                                      ├──> Corrupted timestamps: Kept, timestamp=raw, warning emitted
+                                                      ├──> Truncated JSON lines: Kept as raw text, level=None/inferred
+                                                      ├──> Legacy text/banners: Kept as LineCategory.UNKNOWN
+                                                      └──> Non-fatal parse errors: Recorded in ParsingResult.warnings
+```
+
+- **Input Validation Errors (`InputValidationError`):** Raised when input cannot be safely processed (e.g., `EMPTY_LOG_INPUT`, `INVALID_ENCODING`, `LOG_TOO_LARGE`, `TOO_MANY_LOG_LINES`, `LOG_LINE_TOO_LONG`).
+- **Parser Warnings:** Malformed timestamps (`2026-99-99 25:61:99`), broken JSON, and unrecognized formats remain processable and are retained without crashing.
+
+---
+
+## 3. Evidence Integrity Verification
+
+Before any `ParsingResult` or `FailureAnalysisResult` is exposed to users or downstream LLM workflows, it is passed through `validate_parsing_result()` or `validate_analysis_result()`:
+
+1. **Source Line Bounds:** Every line number $L$ in an entry or event must satisfy $1 \le L \le \text{total\_lines}$.
+2. **Source Line Fidelity:** The `raw_line` content stored in the model must match `canonical_lines[L - 1]` character-for-character.
+3. **Range Validity:** For every failure event, `start_line <= primary_line <= end_line`.
+4. **Unique Event ID Association:** Each `failure_event_id` is unique and points to an existing event.
+5. **Group Occurrences Consistency:**
+   - Every group occurrence links to an existing failure event.
+   - Group `occurrence_count == len(occurrences)`.
+   - `first_seen_line == min(occurrences.primary_line)` and `last_seen_line == max(occurrences.primary_line)`.
+   - Group `fingerprint` is verified to be a valid 64-character hex SHA-256 string.
+6. **Aggregate Metrics Verification:**
+   - `total_log_lines == parsing_result.total_lines`
+   - `total_failure_events == sum(g.occurrence_count)`
+   - `unique_failure_groups == len(failure_groups)`
+   - `repeated_failure_groups == count(g where g.occurrence_count > 1)`
+   - `most_frequent_failure_count == max(g.occurrence_count)`
+
+If any check fails, `EvidenceIntegrityError` is raised (or an `EvidenceValidationResult` with `is_valid=False` and structured `ValidationIssue` items is returned).
+
+---
+
+## 4. End-to-End Validated Analysis Example
 
 ```python
 from pathlib import Path
-from app.services.log_parser import parse_log_text
-from app.services.grouping import analyze_failures
+from app.services.evidence_validator import run_validated_analysis
 
-log_text = Path("tests/fixtures/recurring_failures.log").read_text()
-parsing_result = parse_log_text(log_text)
-analysis = analyze_failures(parsing_result)
+log_text = Path("tests/fixtures/recurring_failures.log").read_text(encoding="utf-8")
+
+# run_validated_analysis executes:
+# 1. validate_log_input (byte, line, character limits, encoding)
+# 2. parse_log_text (1-based entries, stack traces, failure events)
+# 3. analyze_failures (fingerprinting, grouping, metrics)
+# 4. validate_analysis_result (full evidence integrity verification)
+analysis = run_validated_analysis(log_text)
+
+print(f"Total lines verified: {analysis.metrics.total_log_lines}")
+print(f"Unique failure groups: {analysis.metrics.unique_failure_groups}")
+print(f"Repeated failures: {analysis.metrics.repeated_failure_events}")
 ```
 
-### Metrics Output:
+### Representative Invalid-Input Validation Error Example
+
+When an input violates configured safety boundaries:
+
+```python
+from app.core.exceptions import InputValidationError
+from app.services.input_validator import validate_log_input
+
+try:
+    validate_log_input("   \n\n\t   ")
+except InputValidationError as err:
+    print(err.to_dict())
+```
+
+**Output:**
 ```json
 {
-  "total_log_lines": 34,
-  "total_error_entries": 4,
-  "total_warning_entries": 0,
-  "total_failure_events": 4,
-  "unique_failure_groups": 2,
-  "repeated_failure_groups": 1,
-  "repeated_failure_events": 3,
-  "most_frequent_failure_count": 3
+  "code": "EMPTY_LOG_INPUT",
+  "message": "Log input is empty or contains only whitespace.",
+  "line_number": null,
+  "limit": null,
+  "actual": null
 }
 ```
 
-### Grouped Failures:
-1. **Group 1 (Repeated Failure):**
-   - **Title:** `DatabaseConnectionError: Connection lost to database cluster primary`
-   - **Fingerprint:** `72907e419faff67e93066426a148dc4cfb8dd9cea92d3338c33f06c83b2ef1a8`
-   - **Occurrence Count:** `3`
-   - **Source Lines:** `[2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 26, 27, 28, 29, 30, 31, 32]`
-   - **First Seen:** Line 8, **Last Seen:** Line 32
-2. **Group 2 (Isolated Failure):**
-   - **Title:** `ValidationError: Missing required field 'shipping_address'`
-   - **Fingerprint:** `b9e399ea2dcb785f473b21b4f240d63682b74c098fbaa13693f22e2985faaa4d`
-   - **Occurrence Count:** `1`
-   - **Source Lines:** `[18, 19, 20, 21, 22, 23, 24]`
-   - **First Seen:** Line 24, **Last Seen:** Line 24
+When a single line exceeds `MAX_LOG_LINE_LENGTH`:
+```json
+{
+  "code": "LOG_LINE_TOO_LONG",
+  "message": "Line 42 exceeds maximum allowed character length (16384 characters).",
+  "line_number": 42,
+  "limit": 16384,
+  "actual": 25000
+}
+```
 
 ---
 
-## 4. Technology Stack
+## 5. Security & Privacy Considerations
+
+- **Diagnostics Safety:** Validation errors and issues return line numbers, counts, and limit definitions. They **never** include full submitted raw logs or sensitive tokens in exception messages to avoid accidental leaking in monitoring systems or HTTP error responses.
+- **Resource Protection:** Payloads exceeding byte or line thresholds are rejected before invoking regex evaluators or JSON parsers, preventing Regular Expression Denial of Service (ReDoS) or memory exhaustion.
+
+---
+
+## 6. Known Limitations
+
+- **Streaming / Chunked Logs:** Current validation processes complete in-memory strings or bytes. Streaming parsing for multi-gigabyte files is out of scope for the current phase.
+- **Log Masking / Redaction:** Automatic redaction of credentials and PII within log lines will be coordinated with the LLM triage pipeline in Phase 5.
+
+---
+
+## 7. Technology Stack
 
 ### Backend & Core
 - **Language:** Python 3.11+ (Tested on Python 3.12)
 - **Data Validation:** Pydantic v2 & Pydantic-Settings
 - **Environment Management:** python-dotenv
 
-### Algorithms & Services (Phase 2 & Phase 3)
+### Algorithms & Services
 - Python Standard Library (`re`, `hashlib`, `json`, `enum`, `collections`)
-- Deterministic SHA-256 fingerprinting and occurrence aggregation
+- Deterministic SHA-256 failure fingerprinting and conservative variable normalization
+- Dual-stage input and evidence integrity validators
 
 ### Quality & Testing
-- **Test Framework:** pytest & pytest-cov (119 passing tests, 91% coverage)
-- **Linter & Formatter:** Ruff
+- **Test Framework:** pytest & pytest-cov (192 passing tests, 91% code coverage)
+- **Linter & Formatter:** Ruff (100% compliant)
 
 ---
 
-## 5. Installation & Quickstart
+## 8. Installation & Verification
 
 ```bash
 # Clone repository and enter directory
@@ -164,20 +200,20 @@ source .venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Run all automated tests
+# Run all 192 automated unit and integration tests
 pytest
 
-# Run tests with coverage
+# Run tests with statement and branch coverage
 pytest --cov=app --cov-report=term-missing
 
-# Run linting checks
+# Run code style and lint checks
 ruff check .
 ruff format --check .
 ```
 
 ---
 
-## 6. Implementation Roadmap
+## 9. Implementation Roadmap
 
 - [x] **Phase 1: Project Setup & Sample Logs**
   - Scaffolding, configuration management, and initial test suite.
@@ -188,10 +224,11 @@ ruff format --check .
   - Variable normalization (UUIDs, request IDs, hex addresses).
   - Deterministic SHA-256 fingerprinting.
   - Multi-occurrence failure grouping and recurrence metrics.
-- [ ] **Phase 4: Input Validation & Evidence Integrity**
-  - Request validation limits (size, lines) and bounded evidence extraction.
-  - REST API (`/health`, `/api/v1/analyze`).
+- [x] **Phase 4: Input Validation & Evidence Integrity**
+  - Strict pre-parse size, line-count, and line-length limits.
+  - Canonical line splitting semantics (`split_source_lines`).
+  - Evidence integrity verification on entries, events, groups, and metrics.
 - [ ] **Phase 5: LLM Service & Report Generation**
   - Provider-agnostic LLM interface with strict evidence validation.
-- [ ] **Phase 6: Streamlit Dashboard & Documentation**
+- [ ] **Phase 6: Streamlit Dashboard & REST API**
   - Interactive web UI with side-by-side evidence inspection.

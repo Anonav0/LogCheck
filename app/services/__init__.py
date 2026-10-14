@@ -1,5 +1,10 @@
 """Service layer for LogLens AI."""
 
+from app.services.evidence_validator import (
+    run_validated_analysis,
+    validate_analysis_result,
+    validate_parsing_result,
+)
 from app.services.exception_detector import (
     detect_assertion_failure,
     detect_java_exception,
@@ -17,6 +22,10 @@ from app.services.grouping import (
     analyze_failures,
     compute_analysis_metrics,
     group_failures,
+)
+from app.services.input_validator import (
+    validate_log_file_bytes,
+    validate_log_input,
 )
 from app.services.log_parser import LogParser, parse_log_text
 from app.services.stack_trace_parser import (
@@ -48,5 +57,10 @@ __all__ = [
     "is_stack_frame_line",
     "normalize_failure_message",
     "parse_log_text",
+    "run_validated_analysis",
     "serialize_signature",
+    "validate_analysis_result",
+    "validate_log_file_bytes",
+    "validate_log_input",
+    "validate_parsing_result",
 ]

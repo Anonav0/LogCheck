@@ -38,6 +38,14 @@ class Settings(BaseSettings):
         default=20_000,
         description="Maximum accepted line count for log input",
     )
+    MAX_LOG_LINE_LENGTH: int = Field(
+        default=16_384,
+        description="Maximum accepted character length for an individual line",
+    )
+    ALLOW_PARTIAL_ANALYSIS: bool = Field(
+        default=False,
+        description="Whether partial analysis is allowed on oversized logs",
+    )
 
     # LLM Service Configuration (Optional; disabled by default)
     LLM_ENABLED: bool = Field(
@@ -75,6 +83,14 @@ class Settings(BaseSettings):
         """Ensure maximum log lines limit is strictly positive."""
         if value <= 0:
             raise ValueError("MAX_LOG_LINES must be greater than 0")
+        return value
+
+    @field_validator("MAX_LOG_LINE_LENGTH")
+    @classmethod
+    def validate_max_log_line_length(cls, value: int) -> int:
+        """Ensure maximum log line length is strictly positive."""
+        if value <= 0:
+            raise ValueError("MAX_LOG_LINE_LENGTH must be greater than 0")
         return value
 
     @field_validator("LLM_TIMEOUT_SECONDS")

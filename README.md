@@ -7,8 +7,8 @@
 **LogLens AI** is an intelligent log analysis engine designed to help software engineers rapidly inspect application and test logs, isolate errors and exceptions, extract multiline stack traces, group recurring failures via deterministic fingerprinting, and generate actionable, evidence-backed debugging summaries using LLMs.
 
 > [!NOTE]
-> **Development Status: Phase 5 Completed (LLM Integration & AI Triage Layer)**
-> A provider-independent LLM service with strict Pydantic response validation, bounded prompt construction, conservative secret redaction, post-generation source-evidence verification, and deterministic offline fallback is fully implemented and tested. FastAPI REST endpoints and Streamlit dashboard will be built in Phase 6.
+> **Development Status: Phase 6 Completed (FastAPI Backend)**
+> Production-grade FastAPI REST API with endpoints for liveness (`GET /health`), offline readiness (`GET /health/ready`), and complete deterministic and AI-assisted log analysis (`POST /api/v1/analyze`). Features request correlation (`X-Request-ID`), execution timing headers (`X-Process-Time`), centralized error mapping, and interactive OpenAPI documentation (`/docs`, `/redoc`). Streamlit dashboard will be built in Phase 7.
 
 ---
 
@@ -20,217 +20,258 @@ Modern software applications and automated test suites generate verbose, noisy l
 - Discrepancies between log splitters and parsers cause "off-by-one" line numbering errors.
 - Generic LLM summaries often hallucinate nonexistent line numbers, invent ungrounded root causes, or expose credentials sent in raw prompts.
 
-**LogLens AI** addresses these challenges through a strict 4-tier safety architecture:
+**LogLens AI** addresses these challenges through a strict 5-tier safety architecture:
 1. **Pre-Parse Input Validation:** Rejects empty, invalidly encoded, or oversized payloads before parsing begins.
 2. **Deterministic Processing Pipeline:** Parses lines, preserves exact 1-based source line numbers, extracts complete stack traces, and fingerprints failures deterministically into recurring failure groups.
 3. **Evidence Integrity Verification:** Verifies every line reference, raw line text, group occurrence mapping, and aggregate metric against the original source log.
 4. **Evidence-Anchored AI Triage:** Sends bounded, structured summaries to an LLM to generate root-cause hypotheses and investigation steps, strictly validating every returned line reference against original source logs with instant deterministic fallback upon any provider failure.
+5. **FastAPI REST API Layer:** Provides typed, schema-validated endpoints with request correlation, non-leaking error responses, and offline readiness probes.
 
 ---
 
-## 2. LLM Integration Architecture (Phase 5)
+## 2. FastAPI Backend Architecture (Phase 6)
 
-The AI triage layer converts deterministic failure groups into structured, actionable debugging summaries while guaranteeing evidence integrity:
+The REST API exposes the analysis pipeline via FastAPI, strictly separating transport and HTTP validation from core domain services:
 
 ```
-[ FailureAnalysisResult ] ────────────┐
-                                      ▼
-                      [ Step 1: Prompt Builder ]
-                      - Bounded group & line selection (LLM_MAX_FAILURE_GROUPS, LLM_MAX_EVIDENCE_LINES)
-                      - Conservative secret redaction (API keys, bearer tokens, passwords)
-                      - Untrusted log content serialized into <LOG_EVIDENCE> JSON block
-                                      │
-                                      ▼
-                      [ Step 2: Provider Invocation ]
-                      - Bounded request timeout (LLM_TIMEOUT_SECONDS)
-                      - Standardized LLMProvider interface (MockLLMProvider, OpenAIProvider)
-                                      │
-                      ┌───────────────┴───────────────┐
-                      │ On Success                    │ On Timeout / Auth / Network / RateLimit
-                      ▼                               ▼
-        [ Step 3: Pydantic Validation ]     [ Step 5: Deterministic Fallback ]
-        - Validates AIAnalysis schema       - Derives insights from grouping metrics
-        - Forbids unknown fields            - Emits verified first-seen references
-        - Enforces confidence & bounds      - Marks analysis_source="fallback"
-                      │
-                      ▼
-        [ Step 4: Evidence Verification ]
-        - Verifies cited lines exist (1..N)
-        - Verifies excerpts match source lines
-        - Verifies event IDs & fingerprints
-                      │
-          ┌───────────┴───────────┐
-          │ Pass                  │ Fail
-          ▼                       ▼
-   [ AIAnalysisResult ]    [ Deterministic Fallback ]
-   analysis_source="llm"   analysis_source="fallback"
+[ HTTP Request: POST /api/v1/analyze ]
+                    │
+                    ▼
+   [ Request Correlation Middleware ]
+   - Generates or validates X-Request-ID header
+   - Measures execution timing (X-Process-Time)
+                    │
+                    ▼
+     [ Request Schema Validation ]
+   - Pydantic model: AnalyzeLogRequest (extra="forbid")
+   - Rejects non-JSON (400) or invalid types (422)
+                    │
+                    ▼
+     [ Domain Input Validation ]
+   - Validates size, line count, line length (413)
+   - Checks UTF-8 encoding and empty payload (422)
+                    │
+                    ▼
+   [ Deterministic Parsing & Grouping ]
+   - Extracts ParsedLogEntry and FailureEvent list
+   - Clusters into FailureGroup via SHA-256
+   - Computes AnalysisMetrics
+                    │
+                    ▼
+      [ Evidence Integrity Checks ]
+   - Validates line bounds and content fidelity
+                    │
+                    ▼
+       [ Optional AI Triage Layer ]
+   - If include_ai=True and LLM_ENABLED: queries LLM
+   - Strict evidence validation on AI references
+   - Automatic fallback if LLM is disabled or fails
+                    │
+                    ▼
+      [ Response Model Assembly ]
+   - Assembles AnalyzeLogResponse (status: completed/warnings/fallback)
+   - Emits response with X-Request-ID and X-Process-Time
 ```
 
-### Supported Providers & Factory
-The architecture decouples the core application from specific AI vendors via the `LLMProvider` interface:
-- **`MockLLMProvider`:** Fully offline, deterministic mock provider for testing and environments without external network access. Supports custom response injection, latency simulation, and error injection.
-- **`OpenAIProvider`:** Production provider adapter calling the OpenAI Chat Completions API with structured JSON responses (`gpt-4o-mini`, `gpt-4o`). Translates HTTP status codes (401, 403, 429, 5xx) to provider-independent exceptions without exposing credentials.
-- **Extensible Factory:** `get_llm_provider(settings)` resolves the active provider from configuration.
+### Endpoints Overview
 
-### Configurable LLM Settings
-
-| Setting | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `LLM_ENABLED` | `bool` | `False` | Master switch for LLM requests. When `False`, returns deterministic fallback immediately. |
-| `LLM_PROVIDER` | `str \| None` | `None` | Provider identifier: `'mock'` or `'openai'`. |
-| `LLM_API_KEY` | `str \| None` | `None` | Provider secret key (never required for offline operation or tests). |
-| `LLM_MODEL` | `str \| None` | `'gpt-4o-mini'` | Model identifier. |
-| `LLM_TIMEOUT_SECONDS` | `float` | `30.0` | Strict timeout ceiling for provider network requests. |
-| `LLM_MAX_OUTPUT_TOKENS` | `int` | `1200` | Maximum token limit for model response. |
-| `LLM_MAX_FAILURE_GROUPS`| `int` | `10` | Maximum failure groups included in model prompt (sorted by recurrence). |
-| `LLM_MAX_EVIDENCE_LINES`| `int` | `80` | Maximum evidence lines included in prompt. |
-| `LLM_MAX_PROMPT_CHARS`  | `int` | `30000` | Maximum character limit for constructed prompt. |
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/health` | Liveness probe verifying process is up (`{"status": "ok", "service": "LogLens AI"}`). |
+| `GET` | `/health/ready` | Readiness probe reporting pipeline and offline LLM availability. |
+| `POST` | `/api/v1/analyze` | Executes complete deterministic analysis and optional AI triage. |
+| `GET` | `/docs` | Interactive Swagger UI documentation. |
+| `GET` | `/redoc` | Interactive ReDoc documentation. |
+| `GET` | `/openapi.json` | OpenAPI 3.1 JSON specification. |
 
 ---
 
-## 3. Strict Pydantic Response Schemas
+## 3. API Usage & Examples
 
-All model responses must conform to `AIAnalysis` (`extra="forbid"`):
+### Starting the Local Server
 
-```python
-class EvidenceReference(BaseModel):
-    line_number: int  # ge=1, le=1_000_000
-    excerpt: str  # min_length=1, max_length=2000
-    failure_event_id: str | None = None
-    fingerprint: str | None = None
-
-
-class LikelyCause(BaseModel):
-    description: str
-    reasoning: str
-    evidence_refs: list[EvidenceReference]
-
-
-class RecommendedAction(BaseModel):
-    action: str
-    rationale: str
-    priority: Literal["high", "medium", "low"]
-    evidence_refs: list[EvidenceReference]
-
-
-class AIAnalysis(BaseModel):
-    summary: str
-    likely_causes: list[LikelyCause]
-    recommended_actions: list[RecommendedAction]
-    confidence: float  # ge=0.0, le=1.0
-    limitations: list[str]
-    evidence_refs: list[EvidenceReference]
-```
-
----
-
-## 4. Source Evidence Verification Policy
-
-AI-generated references are untrusted until verified:
-1. **Line Number Range:** $1 \le \text{line\_number} \le \text{total\_lines}$.
-2. **Excerpt Content:** Must faithfully match the source log line (or its model-visible redacted representation).
-3. **Entity Links:** Any cited `failure_event_id` or `fingerprint` must exist in the deterministic analysis.
-4. **Integrity Interception:** If any reference is invalid or hallucinated, the analysis is rejected and deterministic fallback is invoked with reason `"EVIDENCE_VERIFICATION_FAILED"`.
-
----
-
-## 5. Privacy & Secret Redaction
-
-Prompt building applies conservative regex redaction before sending excerpts to an external LLM:
-- **API Keys:** `sk-[a-zA-Z0-9_-]{20,}` $\rightarrow$ `[REDACTED_API_KEY]`
-- **Bearer Tokens:** `Bearer [a-zA-Z0-9_\-\.]{20,}` $\rightarrow$ `Bearer [REDACTED_TOKEN]`
-- **Passwords / Secrets:** `password="xyz"`, `secret="xyz"` $\rightarrow$ `password="[REDACTED]"`
-- **Private Keys:** PEM private key blocks $\rightarrow$ `[REDACTED_PRIVATE_KEY]`
-
-> [!IMPORTANT]
-> Redaction is a defense-in-depth measure. Full raw prompts and raw responses are never logged in application logs or exception traces.
-
----
-
-## 6. Programmatic Usage Examples
-
-### Running AI Analysis with Mock Provider (Offline)
-```python
-from pathlib import Path
-from app.core.config import Settings
-from app.services.grouping import analyze_failures
-from app.services.llm import MockLLMProvider, analyze_failures_with_ai
-from app.services.log_parser import parse_log_text
-
-log_text = Path("tests/fixtures/recurring_failures.log").read_text(encoding="utf-8")
-analysis = analyze_failures(parse_log_text(log_text))
-
-settings = Settings(LLM_ENABLED=True, LLM_PROVIDER="mock", _env_file=None)
-ai_result = analyze_failures_with_ai(
-    analysis_result=analysis,
-    raw_log=log_text,
-    settings=settings,
-)
-
-print(f"Source: {ai_result.analysis_source}")  # 'llm'
-print(f"Summary: {ai_result.analysis.summary}")
-print(f"Confidence: {ai_result.analysis.confidence}")
-print(f"Verified Citations: {ai_result.verified_evidence_count}")
-```
-
-### Deterministic Fallback Output (When LLM is Disabled or Fails)
-```python
-settings = Settings(LLM_ENABLED=False, _env_file=None)
-ai_result = analyze_failures_with_ai(
-    analysis_result=analysis, raw_log=log_text, settings=settings
-)
-
-print(f"Source: {ai_result.analysis_source}")  # 'fallback'
-print(f"Reason: {ai_result.fallback_reason}")  # 'LLM_DISABLED'
-print(
-    f"Summary: {ai_result.analysis.summary}"
-)  # 'Deterministic failure analysis identified 4 failure event(s)...'
-```
-
----
-
-## 7. Known Limitations
-
-- **Hypotheses vs. Proof:** Model-generated root causes are structured hypotheses, not confirmed diagnoses. Developers should review cited evidence lines before taking disruptive actions.
-- **Redaction Coverage:** Automated regex redaction catches common credential formats; proprietary tokens or unusual formats may require manual sanitization before submission.
-
----
-
-## 8. Technology Stack
-
-- **Core & Runtime:** Python 3.11+, Pydantic v2, Pydantic-Settings, python-dotenv
-- **HTTP Transport:** requests
-- **Testing:** pytest, pytest-cov (245 passing tests, 91% code coverage)
-- **Linting & Code Quality:** Ruff (100% compliant)
-
----
-
-## 9. Verification Commands
+Run the application using Uvicorn:
 
 ```bash
-# Run complete test suite (all tests run completely offline without an API key)
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+### 1. Health Liveness Probe (`GET /health`)
+```bash
+curl -s http://127.0.0.1:8000/health
+```
+```json
+{
+  "status": "ok",
+  "service": "LogLens AI"
+}
+```
+
+### 2. Service Readiness Probe (`GET /health/ready`)
+Evaluates operational readiness strictly offline without calling external APIs or requiring credentials:
+```bash
+curl -s http://127.0.0.1:8000/health/ready
+```
+```json
+{
+  "status": "ready",
+  "llm_enabled": false,
+  "llm_available": false
+}
+```
+
+### 3. Log Analysis (`POST /api/v1/analyze`)
+
+#### Deterministic Analysis (`include_ai: false`):
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/analyze \
+  -H "Content-Type: application/json" \
+  -d '{"log_text":"2026-10-14 10:30:00 ERROR app.service - Database connection failed","include_ai":false}'
+```
+
+#### Example Response:
+```json
+{
+  "request_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "status": "completed",
+  "metrics": {
+    "total_log_lines": 1,
+    "total_error_entries": 1,
+    "total_warning_entries": 0,
+    "total_failure_events": 1,
+    "unique_failure_groups": 1,
+    "repeated_failure_groups": 0,
+    "repeated_failure_events": 0,
+    "most_frequent_failure_count": 1
+  },
+  "parsed_entries": [
+    {
+      "line_number": 1,
+      "raw_line": "2026-10-14 10:30:00 ERROR app.service - Database connection failed",
+      "timestamp": "2026-10-14 10:30:00",
+      "level": "ERROR",
+      "logger_name": "app.service",
+      "message": "Database connection failed",
+      "has_stack_trace": false
+    }
+  ],
+  "failure_events": [
+    {
+      "event_id": "fe_00001",
+      "event_type": "explicit_error",
+      "primary_line_number": 1,
+      "start_line_number": 1,
+      "end_line_number": 1,
+      "line_numbers": [1],
+      "message": "Database connection failed",
+      "level": "ERROR",
+      "logger_name": "app.service"
+    }
+  ],
+  "failure_groups": [
+    {
+      "fingerprint": "c4ca4238a0b923820dcc509a6f75849b3c4ca4238a0b923820dcc509a6f75849",
+      "title": "explicit_error in app.service",
+      "failure_category": "explicit_error",
+      "representative_message": "Database connection failed",
+      "occurrence_count": 1,
+      "line_numbers": [1],
+      "first_seen_line": 1,
+      "last_seen_line": 1,
+      "severity": "ERROR",
+      "component": "app.service"
+    }
+  ],
+  "parser_warnings": [],
+  "ai_analysis": null,
+  "analysis_source": "none",
+  "processing_time_ms": 1.45
+}
+```
+
+---
+
+## 4. Standardized Error Handling
+
+All error responses return a standardized `ErrorResponse` envelope without exposing internal paths, stack traces, or credentials:
+
+```json
+{
+  "error": {
+    "code": "LOG_TOO_LARGE",
+    "message": "Log payload size (2097152 bytes) exceeds limit (1048576 bytes)",
+    "request_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "limit": 1048576,
+    "actual": 2097152
+  }
+}
+```
+
+### Status Code Mapping
+
+| Status Code | Error Code | Trigger Condition |
+| :--- | :--- | :--- |
+| `400 Bad Request` | `MALFORMED_JSON` | Body is not valid JSON. |
+| `413 Content Too Large` | `LOG_TOO_LARGE` | Byte length exceeds `MAX_LOG_SIZE_BYTES`. |
+| `413 Content Too Large` | `TOO_MANY_LOG_LINES` | Line count exceeds `MAX_LOG_LINES`. |
+| `413 Content Too Large` | `LOG_LINE_TOO_LONG` | Single line exceeds `MAX_LOG_LINE_LENGTH`. |
+| `422 Unprocessable Content`| `EMPTY_LOG_INPUT` | Input is empty or whitespace-only. |
+| `422 Unprocessable Content`| `VALIDATION_ERROR` | Schema mismatch, missing fields, or unknown extra fields. |
+| `500 Internal Server Error`| `INTERNAL_SERVER_ERROR` | Unexpected internal exception (sanitized response). |
+| `500 Internal Server Error`| `EVIDENCE_INTEGRITY_VIOLATION` | Internal evidence consistency check failed. |
+
+---
+
+## 5. Environment Configuration
+
+Configured via environment variables or a local `.env` file (`app/core/config.py`):
+
+| Variable | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `APP_NAME` | `str` | `"LogLens AI"` | Application name. |
+| `APP_ENV` | `str` | `"development"` | Deployment environment. |
+| `DEBUG` | `bool` | `False` | Debug mode. |
+| `MAX_LOG_SIZE_BYTES` | `int` | `1048576` (1 MiB) | Maximum accepted raw log payload in bytes. |
+| `MAX_LOG_LINES` | `int` | `20000` | Maximum accepted line count for log input. |
+| `MAX_LOG_LINE_LENGTH` | `int` | `16384` | Maximum accepted characters per individual line. |
+| `LLM_ENABLED` | `bool` | `False` | Master switch for LLM requests. |
+| `LLM_PROVIDER` | `str \| None` | `None` | Provider identifier: `'mock'` or `'openai'`. |
+| `LLM_API_KEY` | `str \| None` | `None` | Secret API key (never required for tests). |
+| `LLM_MODEL` | `str \| None` | `None` | Model identifier (e.g., `'gpt-4o-mini'`). |
+| `LLM_TIMEOUT_SECONDS` | `float` | `30.0` | Timeout in seconds for LLM calls. |
+
+---
+
+## 6. Testing & Quality Verification
+
+All 275 tests run completely offline without internet access or real LLM credentials:
+
+```bash
+# Run complete test suite (Phases 1 through 6)
 pytest
 
-# Measure statement and branch coverage
+# Run tests with statement and branch coverage report
 pytest --cov=app --cov-report=term-missing
 
-# Run code style and lint checks
+# Run code style and formatting checks
 ruff check .
 ruff format --check .
 ```
 
 ---
 
-## 10. Implementation Roadmap
+## 7. Implementation Roadmap
 
 - [x] **Phase 1: Project Setup & Sample Logs**
 - [x] **Phase 2: Core Log Parsing & Failure Detection**
 - [x] **Phase 3: Failure Fingerprinting & Grouping**
 - [x] **Phase 4: Input Validation & Evidence Integrity**
 - [x] **Phase 5: LLM Service & Report Generation**
-  - Provider abstraction (`LLMProvider`, `MockLLMProvider`, `OpenAIProvider`).
-  - Strict Pydantic response schemas (`AIAnalysis`, `LikelyCause`, `RecommendedAction`).
-  - Bounded prompt construction with secret redaction.
-  - Evidence reference verification.
-  - Deterministic fallback analysis.
-- [ ] **Phase 6: Streamlit Dashboard & REST API**
+- [x] **Phase 6: FastAPI Backend**
+  - Application factory with CORS, request correlation, and timing middleware.
+  - Health (`/health`) and readiness (`/health/ready`) probe endpoints.
+  - Log analysis endpoint (`/api/v1/analyze`) with deterministic and AI fallback.
+  - Strict Pydantic request and response schemas with standardized error formatting.
+  - Interactive OpenAPI documentation (`/docs`, `/redoc`, `/openapi.json`).
+  - Automated offline ASGI test suite (30 API tests, 275 total tests, 91% code coverage).
+- [ ] **Phase 7: Streamlit Dashboard**

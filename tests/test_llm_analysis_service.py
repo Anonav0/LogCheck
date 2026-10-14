@@ -234,4 +234,3 @@ class TestAIAnalysisServiceIntegration:
 
         assert result.analysis_source == "fallback"
         assert "EVIDENCE_VERIFICATION_FAILED" in (result.fallback_reason or "")
-

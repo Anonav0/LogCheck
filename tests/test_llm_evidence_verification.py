@@ -178,4 +178,3 @@ class TestEvidenceVerification:
         )
         assert is_valid is True
         assert len(errors) == 0
-

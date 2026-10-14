@@ -135,4 +135,3 @@ class AIAnalysisResult(BaseModel):
     model: str | None = None
     duration_seconds: float = Field(default=0.0, ge=0.0)
     verified_evidence_count: int = Field(default=0, ge=0)
-

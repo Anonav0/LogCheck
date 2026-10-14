@@ -98,3 +98,13 @@ def clean_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
     settings = Settings(_env_file=None)
     yield settings
     get_settings.cache_clear()
+
+
+@pytest.fixture
+def api_client(clean_settings: Settings) -> Generator:
+    """Return an ASGI test client for the FastAPI application with clean settings."""
+    from app.main import create_app
+    from tests.asgi_client import ASGIClient
+
+    app = create_app(settings=clean_settings)
+    yield ASGIClient(app)

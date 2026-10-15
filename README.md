@@ -3,7 +3,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![Code Style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Testing: pytest](https://img.shields.io/badge/tested_with-pytest-0a9edc.svg)](https://docs.pytest.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 
 **LogLens AI** is an intelligent, high-reliability log analysis engine designed to help software engineers, SREs, and DevOps teams rapidly triage application and test logs. It parses multiline logs, isolates error events, extracts complete stack traces, clusters recurring failures via deterministic SHA-256 fingerprinting, and generates evidence-anchored root-cause hypotheses using LLMs (Google Gemini or OpenAI) with automatic, zero-downtime deterministic fallback.
 

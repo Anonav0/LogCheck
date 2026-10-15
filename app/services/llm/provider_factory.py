@@ -247,6 +247,153 @@ class OpenAIProvider(LLMProvider):
             ) from exc
 
 
+class GeminiProvider(LLMProvider):
+    """Production provider adapter communicating with Google Gemini REST API."""
+
+    def __init__(
+        self,
+        api_key: str | None,
+        model: str = "gemini-2.5-flash",
+        base_url: str = "https://generativelanguage.googleapis.com/v1beta",
+        max_output_tokens: int = 4096,
+    ) -> None:
+        if not api_key:
+            raise LLMAuthenticationError(
+                "Google Gemini API key is missing or empty. Please set LLM_API_KEY.",
+                provider="gemini",
+            )
+        self._api_key = api_key
+        clean_model = model.strip() if model else ""
+        if clean_model.startswith("models/"):
+            clean_model = clean_model[len("models/") :]
+        self._model = clean_model or "gemini-2.5-flash"
+        self._base_url = base_url.rstrip("/")
+        self._max_output_tokens = max_output_tokens
+
+    @property
+    def provider_name(self) -> str:
+        return "gemini"
+
+    @property
+    def model_name(self) -> str | None:
+        return self._model
+
+    def generate(self, prompt: str, timeout_seconds: float | None = None) -> str:
+        """Call the Google Gemini generateContent REST endpoint.
+
+        Raises:
+            LLMTimeoutError, LLMAuthenticationError, LLMRateLimitError,
+            LLMNetworkError, LLMResponseError
+        """
+        endpoint = f"{self._base_url}/models/{self._model}:generateContent"
+        headers = {
+            "x-goog-api-key": self._api_key,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "system_instruction": {
+                "parts": [
+                    {
+                        "text": "You are a log analysis assistant. Output ONLY valid JSON adhering to the specified schema."
+                    }
+                ]
+            },
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": self._max_output_tokens,
+                "responseMimeType": "application/json",
+            },
+        }
+
+        timeout = timeout_seconds if timeout_seconds is not None else 30.0
+
+        try:
+            response = requests.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+                timeout=timeout,
+            )
+        except requests.Timeout as exc:
+            raise LLMTimeoutError(
+                f"Gemini API request timed out after {timeout} seconds.",
+                timeout_seconds=timeout,
+                provider="gemini",
+            ) from exc
+        except requests.ConnectionError as exc:
+            raise LLMNetworkError(
+                "Failed to connect to Google Gemini API endpoint.",
+                provider="gemini",
+            ) from exc
+        except requests.RequestException as exc:
+            raise LLMNetworkError(
+                f"Network transport error while contacting Google Gemini: {exc!s}",
+                provider="gemini",
+            ) from exc
+
+        # Handle HTTP response status
+        if response.status_code in (401, 403):
+            raise LLMAuthenticationError(
+                f"Google Gemini authentication failed (HTTP {response.status_code}). Please verify LLM_API_KEY.",
+                provider="gemini",
+            )
+        if response.status_code == 429:
+            raise LLMRateLimitError(
+                "Google Gemini rate limit or quota exceeded (HTTP 429).",
+                provider="gemini",
+            )
+        if response.status_code >= 500:
+            raise LLMResponseError(
+                f"Google Gemini service returned an internal server error (HTTP {response.status_code}).",
+                status_code=response.status_code,
+                provider="gemini",
+            )
+        if not response.ok:
+            raise LLMResponseError(
+                f"Google Gemini returned unexpected status HTTP {response.status_code}.",
+                status_code=response.status_code,
+                provider="gemini",
+            )
+
+        try:
+            data = response.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                raise LLMResponseError(
+                    "Google Gemini response contained no candidates.",
+                    provider="gemini",
+                )
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if not parts:
+                raise LLMResponseError(
+                    "Google Gemini candidate contained no content parts.",
+                    provider="gemini",
+                )
+            selected_text = ""
+            for part in parts:
+                if isinstance(part, dict) and not part.get("thought", False):
+                    part_text = part.get("text", "")
+                    if part_text:
+                        selected_text = part_text
+            if not selected_text and parts:
+                for part in parts:
+                    if isinstance(part, dict) and part.get("text"):
+                        selected_text = part.get("text")
+                        break
+            if not selected_text:
+                raise LLMResponseError(
+                    "Google Gemini returned empty text content.",
+                    provider="gemini",
+                )
+            return selected_text.strip()
+        except ValueError as exc:
+            raise LLMResponseError(
+                "Google Gemini response was not valid JSON.",
+                provider="gemini",
+            ) from exc
+
+
 def get_llm_provider(settings: Settings | None = None) -> LLMProvider:
     """Instantiate and return the configured LLMProvider.
 
@@ -280,6 +427,13 @@ def get_llm_provider(settings: Settings | None = None) -> LLMProvider:
             max_output_tokens=cfg.LLM_MAX_OUTPUT_TOKENS,
         )
 
+    if provider_name in ("google", "gemini", "google_gemini", "google-gemini"):
+        return GeminiProvider(
+            api_key=cfg.LLM_API_KEY,
+            model=cfg.LLM_MODEL or "gemini-2.5-flash",
+            max_output_tokens=cfg.LLM_MAX_OUTPUT_TOKENS,
+        )
+
     raise LLMConfigurationError(
-        f"Unsupported LLM provider: '{cfg.LLM_PROVIDER}'. Supported providers: 'mock', 'openai'."
+        f"Unsupported LLM provider: '{cfg.LLM_PROVIDER}'. Supported providers: 'mock', 'openai', 'gemini'."
     )

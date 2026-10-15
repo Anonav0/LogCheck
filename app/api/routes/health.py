@@ -42,7 +42,14 @@ async def get_readiness(
         provider = (settings.LLM_PROVIDER or "").strip().lower()
         if provider == "mock":
             llm_available = True
-        elif provider in ("openai", "azure_openai"):
+        elif provider in (
+            "openai",
+            "azure_openai",
+            "google",
+            "gemini",
+            "google_gemini",
+            "google-gemini",
+        ):
             llm_available = bool(settings.LLM_API_KEY and settings.LLM_API_KEY.strip())
 
     return ReadyResponse(

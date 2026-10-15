@@ -91,6 +91,41 @@ def test_health_ready_with_openai_with_key(clean_settings: Settings) -> None:
     assert "sk-test-dummy-key" not in response.text
 
 
+def test_health_ready_with_gemini_with_key(clean_settings: Settings) -> None:
+    """Test that GET /health/ready reports llm_available=True when Gemini key is set."""
+    clean_settings.LLM_ENABLED = True
+    clean_settings.LLM_PROVIDER = "Google"
+    clean_settings.LLM_API_KEY = "test-gemini-secret-key"
+    app = create_app(settings=clean_settings)
+    client = ASGIClient(app)
+
+    response = client.get("/health/ready")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["status"] == "ready"
+    assert data["llm_enabled"] is True
+    assert data["llm_available"] is True
+    assert "test-gemini-secret-key" not in response.text
+
+
+def test_health_ready_with_gemini_no_key(clean_settings: Settings) -> None:
+    """Test that GET /health/ready reports llm_available=False when Gemini key is missing."""
+    clean_settings.LLM_ENABLED = True
+    clean_settings.LLM_PROVIDER = "gemini"
+    clean_settings.LLM_API_KEY = ""
+    app = create_app(settings=clean_settings)
+    client = ASGIClient(app)
+
+    response = client.get("/health/ready")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["status"] == "ready"
+    assert data["llm_enabled"] is True
+    assert data["llm_available"] is False
+
+
 def test_request_id_propagation_and_fallback(api_client: ASGIClient) -> None:
     """Test custom X-Request-ID propagation and fallback for invalid formats."""
     # Valid custom request ID

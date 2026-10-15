@@ -2,25 +2,29 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class EvidenceReference(BaseModel):
     """Reference to a specific source log line or entity supporting an AI finding."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     line_number: int = Field(
         ...,
         ge=1,
         le=1_000_000,
         description="1-based line number in the original source log",
+        validation_alias=AliasChoices(
+            "line_number", "line", "line_no", "lineNumber", "source_line"
+        ),
     )
     excerpt: str = Field(
         ...,
         min_length=1,
         max_length=2000,
         description="Raw or redacted text excerpt from the referenced log line",
+        validation_alias=AliasChoices("excerpt", "text", "content", "quote"),
     )
     failure_event_id: str | None = Field(
         default=None,

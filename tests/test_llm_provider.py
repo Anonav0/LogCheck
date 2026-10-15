@@ -15,6 +15,7 @@ from app.services.llm.exceptions import (
     LLMTimeoutError,
 )
 from app.services.llm.provider_factory import (
+    GeminiProvider,
     MockLLMProvider,
     OpenAIProvider,
     get_llm_provider,
@@ -138,6 +139,140 @@ class TestOpenAIProvider:
             provider.generate("prompt")
 
 
+class TestGeminiProvider:
+    """Tests verifying Google Gemini provider adapter and HTTP error translations."""
+
+    def test_missing_api_key_raises_auth_error(self) -> None:
+        with pytest.raises(LLMAuthenticationError) as exc_info:
+            GeminiProvider(api_key=None)
+        assert "API key is missing" in exc_info.value.message
+        assert exc_info.value.provider == "gemini"
+
+    @patch("app.services.llm.provider_factory.requests.post")
+    def test_successful_gemini_generation(self, mock_post: MagicMock) -> None:
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": '{"summary": "Gemini passed"}'}],
+                        "role": "model",
+                    }
+                }
+            ]
+        }
+        mock_post.return_value = mock_response
+
+        provider = GeminiProvider(api_key="test-gemini-key", model="gemini-2.5-flash")
+        result = provider.generate("Test prompt", timeout_seconds=20.0)
+
+        assert result == '{"summary": "Gemini passed"}'
+        mock_post.assert_called_once()
+        args, kwargs = mock_post.call_args
+        assert kwargs["headers"]["x-goog-api-key"] == "test-gemini-key"
+        assert kwargs["timeout"] == 20.0
+        assert "models/gemini-2.5-flash:generateContent" in args[0]
+
+    @patch("app.services.llm.provider_factory.requests.post")
+    def test_gemini_model_name_prefix_stripped(self, mock_post: MagicMock) -> None:
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": '{"summary": "ok"}'}],
+                    }
+                }
+            ]
+        }
+        mock_post.return_value = mock_response
+
+        provider = GeminiProvider(
+            api_key="test-key", model="models/gemini-3.5-flash-lite"
+        )
+        assert provider.model_name == "gemini-3.5-flash-lite"
+        provider.generate("prompt")
+        args, _ = mock_post.call_args
+        assert "models/gemini-3.5-flash-lite:generateContent" in args[0]
+
+    @patch("app.services.llm.provider_factory.requests.post")
+    def test_gemini_multipart_thinking_model(self, mock_post: MagicMock) -> None:
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"thought": True, "text": "Thinking steps..."},
+                            {"text": '{"summary": "Final answer"}'},
+                        ],
+                    }
+                }
+            ]
+        }
+        mock_post.return_value = mock_response
+
+        provider = GeminiProvider(api_key="test-key")
+        result = provider.generate("prompt")
+        assert result == '{"summary": "Final answer"}'
+
+    @patch("app.services.llm.provider_factory.requests.post")
+    def test_auth_error_translation_401(self, mock_post: MagicMock) -> None:
+        mock_response = MagicMock()
+        mock_response.ok = False
+        mock_response.status_code = 401
+        mock_post.return_value = mock_response
+
+        provider = GeminiProvider(api_key="invalid-key")
+        with pytest.raises(LLMAuthenticationError) as exc_info:
+            provider.generate("prompt")
+        assert "401" in exc_info.value.message
+        assert "invalid-key" not in str(exc_info.value)
+
+    @patch("app.services.llm.provider_factory.requests.post")
+    def test_rate_limit_error_translation_429(self, mock_post: MagicMock) -> None:
+        mock_response = MagicMock()
+        mock_response.ok = False
+        mock_response.status_code = 429
+        mock_post.return_value = mock_response
+
+        provider = GeminiProvider(api_key="test-key")
+        with pytest.raises(LLMRateLimitError):
+            provider.generate("prompt")
+
+    @patch("app.services.llm.provider_factory.requests.post")
+    def test_server_error_translation_500(self, mock_post: MagicMock) -> None:
+        mock_response = MagicMock()
+        mock_response.ok = False
+        mock_response.status_code = 500
+        mock_post.return_value = mock_response
+
+        provider = GeminiProvider(api_key="test-key")
+        with pytest.raises(LLMResponseError) as exc_info:
+            provider.generate("prompt")
+        assert exc_info.value.status_code == 500
+
+    @patch("app.services.llm.provider_factory.requests.post")
+    def test_timeout_translation(self, mock_post: MagicMock) -> None:
+        mock_post.side_effect = requests.Timeout("Connection timed out")
+        provider = GeminiProvider(api_key="test-key")
+        with pytest.raises(LLMTimeoutError):
+            provider.generate("prompt", timeout_seconds=5.0)
+
+    @patch("app.services.llm.provider_factory.requests.post")
+    def test_connection_error_translation(self, mock_post: MagicMock) -> None:
+        mock_post.side_effect = requests.ConnectionError("DNS failure")
+        provider = GeminiProvider(api_key="test-key")
+        with pytest.raises(LLMNetworkError):
+            provider.generate("prompt")
+
+
 class TestProviderFactory:
     """Tests verifying get_llm_provider factory resolution."""
 
@@ -159,6 +294,18 @@ class TestProviderFactory:
         assert isinstance(provider, OpenAIProvider)
         assert provider.provider_name == "openai"
         assert provider.model_name == "gpt-4o"
+
+    def test_gemini_provider_selection(self) -> None:
+        settings = Settings(
+            LLM_PROVIDER="Google",
+            LLM_API_KEY="test-gemini-key",
+            LLM_MODEL="gemini-3.5-flash-lite",
+            _env_file=None,
+        )
+        provider = get_llm_provider(settings)
+        assert isinstance(provider, GeminiProvider)
+        assert provider.provider_name == "gemini"
+        assert provider.model_name == "gemini-3.5-flash-lite"
 
     def test_unknown_provider_raises_configuration_error(self) -> None:
         settings = Settings(LLM_PROVIDER="unknown_provider", _env_file=None)

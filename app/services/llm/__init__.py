@@ -24,6 +24,7 @@ from app.services.llm.prompt_builder import (
     redact_sensitive_content,
 )
 from app.services.llm.provider_factory import (
+    GeminiProvider,
     MockLLMProvider,
     OpenAIProvider,
     get_llm_provider,
@@ -41,6 +42,7 @@ __all__ = [
     "AIAnalysisResult",
     "BuiltPrompt",
     "EvidenceReference",
+    "GeminiProvider",
     "LLMAuthenticationError",
     "LLMConfigurationError",
     "LLMError",

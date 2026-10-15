@@ -196,7 +196,9 @@ def build_analysis_prompt(
                 was_redacted=was_redacted,
             )
             evidence_lines[ln] = pel
-            evidence_payload.append({"line": ln, "content": redacted_text})
+            evidence_payload.append(
+                {"line_number": ln, "line": ln, "content": redacted_text}
+            )
 
     # 4. Build structured groups summary payload
     groups_payload: list[dict[str, object]] = []

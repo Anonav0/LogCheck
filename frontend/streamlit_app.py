@@ -195,9 +195,10 @@ def main() -> None:
         st.markdown("---")
         st.header("⚙️ Analysis Options")
 
+        default_ai = bool(ready_data and ready_data.get("llm_available", False))
         include_ai = st.checkbox(
-            "Request AI Assistance",
-            value=False,
+            "Request AI Assistance (Google Gemini)",
+            value=default_ai,
             help=(
                 "Requests AI-assisted root-cause hypotheses and triage recommendations with verified citations. "
                 "If AI is disabled or fails, deterministic fallback is automatically returned."

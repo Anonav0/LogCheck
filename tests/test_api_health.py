@@ -105,4 +105,3 @@ def test_request_id_propagation_and_fallback(api_client: ASGIClient) -> None:
     assert res2.status_code == 200
     assert res2.headers["x-request-id"] != invalid_id
     assert len(res2.headers["x-request-id"]) > 0
-

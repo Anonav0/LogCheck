@@ -33,4 +33,3 @@ class AnalyzeLogRequest(BaseModel):
         if not value or not value.strip():
             raise ValueError("log_text cannot be empty or contain only whitespace.")
         return value
-

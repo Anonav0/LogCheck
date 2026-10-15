@@ -76,6 +76,9 @@ ignore = [
     "E501",  # line length handled by formatter
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"frontend/streamlit_app.py" = ["E402"]
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
